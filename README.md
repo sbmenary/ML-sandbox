@@ -1,1 +1,1 @@
-Initial setup
+Repo for simple ML experiments
