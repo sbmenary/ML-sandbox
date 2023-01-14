@@ -23,7 +23,7 @@ class BinaryPlayer(IntEnum):
     NONE = 0
     X    = 1
     O    = -1
-    def label(self) :
+    def label(self) -> str:
         """
         Returns a single character representation of the player.
             > X    = 'X'
@@ -34,6 +34,13 @@ class BinaryPlayer(IntEnum):
         if self.value == 1  : return 'X'
         if self.value == -1 : return '0'
         raise NotImplementedError()
+
+    @classmethod
+    def invert(cls, other) -> BinaryPlayer:
+        """
+        Create BinaryPlayer with inverted value.
+        """
+        return cls(-other.value)
 
 
 
@@ -53,7 +60,7 @@ class DebugLevel(IntEnum):
     HIGH   = 3
     ALL    = 4
     
-    def resolve_and_print(self, min_lvl:DebugLevel, message:str) -> bool :
+    def message(self, min_lvl:DebugLevel, message:str) -> bool :
         """
         Print message only if self >= min_lvl.
         Returns bool indicating whether the message was printed.
@@ -154,5 +161,5 @@ class GameResult(IntEnum):
         
         ##  If here then the specifid player must have lost
         return -1.
+
         
-    
