@@ -9,6 +9,8 @@ Various enums to make life easier.
 from __future__ import annotations    ## Allows type-hint to reference same class being defined, __future__ must be imported first
 from enum import IntEnum
 
+from colorama import Fore, Back, Style
+
 
 
 ###===================================###
@@ -25,14 +27,14 @@ class BinaryPlayer(IntEnum):
     O    = -1
     def label(self) -> str:
         """
-        Returns a single character representation of the player.
+        Returns a str representation of the player.
             > X    = 'X'
             > 0    = '0'
             > NONE = '.'
         """
         if self.value == 0  : return '.'
-        if self.value == 1  : return 'X'
-        if self.value == -1 : return '0'
+        if self.value == 1  : return f'{Fore.RED}X{Style.RESET_ALL}'
+        if self.value == -1 : return f'{Fore.BLUE}O{Style.RESET_ALL}'
         raise NotImplementedError()
 
     @classmethod
@@ -162,4 +164,3 @@ class GameResult(IntEnum):
         ##  If here then the specifid player must have lost
         return -1.
 
-        
