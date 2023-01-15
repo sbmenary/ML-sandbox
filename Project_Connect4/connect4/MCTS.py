@@ -8,6 +8,7 @@ Definition of nodes and methods for Monte Carlo Tree Search.
 
 from __future__ import annotations
 from abc  import ABC, abstractmethod
+import time
 
 import numpy as np
 
@@ -128,6 +129,31 @@ class BaseNode(ABC) :
         Returns the action chosen by the simulation policy in the game state provided.
         """
         raise NotImplementedError()
+
+
+    def multi_step_MCTS(self, num_steps:int, max_sim_steps:int=-1, debug_lvl:DebugLevel=DebugLevel.MUTE) :
+        """
+        Perform many MCTS iterations using self as the root node.
+        """
+        for idx in range(num_steps) :
+            debug_lvl.message(DebugLevel.MEDIUM, f"Running MCTS step {idx}")
+            self.one_step_MCTS(max_sim_steps=max_sim_steps, debug_lvl=debug_lvl)
+            debug_lvl.message(DebugLevel.MEDIUM, f"")
+
+
+    def one_step_MCTS(self, max_sim_steps:int=-1, debug_lvl:DebugLevel=DebugLevel.MUTE) :
+        """
+        Perform a single MCTS iteration using self as the root node.
+        """
+        
+        ##  Select and expand from the root node
+        leaf_node = self.select_and_expand(recurse=True, debug_lvl=debug_lvl)
+        
+        ##  Simulate and backprop from the selected child
+        leaf_node.simulate_and_backprop(max_sim_steps=max_sim_steps, debug_lvl=debug_lvl)
+        
+        ##  Print updated tree if debug level is HIGH
+        debug_lvl.message(DebugLevel.HIGH, f"Updated tree is:\n{self.tree_summary()}")
         
         
     def select_and_expand(self, recurse:bool=False, debug_lvl:DebugLevel=DebugLevel.MUTE) -> Node :
@@ -175,14 +201,14 @@ class BaseNode(ABC) :
         return best_child
     
     
-    def simulate(self, max_turns:int=-1, debug_lvl:DebugLevel=DebugLevel.MUTE) -> GameResult :
+    def simulate(self, max_sim_steps:int=-1, debug_lvl:DebugLevel=DebugLevel.MUTE) -> GameResult :
         """
         Simulate a game starting from this node.
         Assumes that both players act according to a uniform-random policy.
         
         Inputs:
         
-            > max_turns, int, default=-1
+            > max_sim_steps, int, default=-1
               if positive then determines how many moves to play before declaring a drawn game
               
             > debug_lvl, DebugLevel, default=MUTE
@@ -228,14 +254,14 @@ class BaseNode(ABC) :
         return result
     
     
-    def simulate_and_backprop(self, max_turns:int=-1, 
+    def simulate_and_backprop(self, max_sim_steps:int=-1, 
                               debug_lvl:DebugLevel=DebugLevel.MUTE) -> None :
         """
         Simulate a game starting from this node. Backpropagate the resulting score up the whole tree.
         
         Inputs:
         
-            > max_turns, int, default=-1
+            > max_sim_steps, int, default=-1
               if positive then determines how many moves to play before declaring a drawn game
               
             > debug_lvl, DebugLevel, default=MUTE
@@ -243,10 +269,28 @@ class BaseNode(ABC) :
         """
         
         ##  Simulated game and obtain instance of GameResult
-        result = self.simulate(max_turns=max_turns, debug_lvl=debug_lvl)
+        result = self.simulate(max_sim_steps=max_sim_steps, debug_lvl=debug_lvl)
         
         ##  Update this node and backprop up the tree
         self.update_and_backprop(result, debug_lvl=debug_lvl)
+            
+            
+    def timed_MCTS(self, duration:int, max_sim_steps:int=-1, debug_lvl:DebugLevel=DebugLevel.MUTE) -> int :
+        """
+        Perform MCTS iterations with self as the root node until duration (in seconds) has elapsed.
+        After this time, MCTS will finish its current iteration, so total execution time is > duration.
+        """
+        
+        ##  Keep calling self.one_step_MCTS until required duration has elapsed
+        start_time   = time.time()
+        current_time = start_time
+        num_itr = 0
+        while current_time - start_time < duration :
+            debug_lvl.message(DebugLevel.MEDIUM, f"Running MCTS step")
+            self.one_step_MCTS(max_sim_steps=max_sim_steps, debug_lvl=debug_lvl)
+            current_time = time.time()
+            num_itr += 1
+        return num_itr
         
         
     def tree_summary(self, indent_level:int=0) :
@@ -309,12 +353,12 @@ class BaseNode(ABC) :
 ###   Node class definition   ###
 ###===========================###
 
-class Node(BaseNode) :
+class Node_VanillaMCTS(BaseNode) :
     
     def __init__(self, game_board:GameBoard, parent:Node=None, params:list=[2.], shallow_copy_board:bool=False, 
                  label=None) :
         """
-        Class Node
+        Class Node_VanillaMCTS
         
         - Used as part of MCTS algorithm. 
         - Stores total score and number of visits
