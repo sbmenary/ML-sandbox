@@ -18,15 +18,15 @@ from connect4.GameBoard import GameBoard
 
 
 ###===============================###
-###   BaseNode class definition   ###
+###   Node_Base class definition   ###
 ###===============================###
 
-class BaseNode(ABC) :
+class Node_Base(ABC) :
     
     def __init__(self, game_board:GameBoard, parent:Node=None, params:list=[], shallow_copy_board:bool=False, 
                  label=None) :
         """
-        Class BaseNode
+        Class Node_Base
         
         - Used as part of MCTS algorithm. 
         - Stores total score and number of visits
@@ -353,7 +353,7 @@ class BaseNode(ABC) :
 ###   Node class definition   ###
 ###===========================###
 
-class Node_VanillaMCTS(BaseNode) :
+class Node_VanillaMCTS(Node_Base) :
     
     def __init__(self, game_board:GameBoard, parent:Node=None, params:list=[2.], shallow_copy_board:bool=False, 
                  label=None) :
@@ -364,7 +364,7 @@ class Node_VanillaMCTS(BaseNode) :
         - Stores total score and number of visits
         - Stores a list of children and a reference to the parent node
         - Provides methods for node selection, expansion, simulation, backpropagation
-        - Derived from BaseNode, implements vanilla UCB1 expansion and uniform-random simulation
+        - Derived from Node_Base, implements vanilla UCB1 expansion and uniform-random simulation
         
         Inputs:
         
@@ -385,7 +385,7 @@ class Node_VanillaMCTS(BaseNode) :
               label for the node, used when generating summary strings
         """
         
-        ##  Call BaseNode initialiser with params=[UCB_c]
+        ##  Call Node_Base initialiser with params=[UCB_c]
         super().__init__(game_board, parent, params, shallow_copy_board, label)
         
         
