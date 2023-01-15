@@ -7,13 +7,13 @@ Definition of nodes and methods for Monte Carlo Tree Search.
 """
 
 from __future__ import annotations
-from abc  import ABC, abstractmethod
+from abc        import ABC, abstractmethod
 import time
 
 import numpy as np
 
-from connect4.enums     import BinaryPlayer, DebugLevel, GameResult
-from connect4.GameBoard import GameBoard
+from connect4.utils import DebugLevel
+from connect4.game  import GameBoard, GameResult
 
 
 

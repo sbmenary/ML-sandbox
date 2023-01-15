@@ -10,9 +10,9 @@ Definition of bots that use MCTS to play connect 4.
 from __future__ import annotations
 from abc  import ABC, abstractmethod
 
-from connect4.enums     import DebugLevel
-from connect4.GameBoard import GameBoard
-from connect4.MCTS      import Node_Base, Node_VanillaMCTS
+from connect4.utils import DebugLevel
+from connect4.game  import GameBoard
+from connect4.MCTS  import Node_Base, Node_VanillaMCTS
 
 
 
