@@ -24,7 +24,7 @@ from connect4.game  import GameBoard, GameResult
 class Node_Base(ABC) :
     
     def __init__(self, game_board:GameBoard, parent:Node=None, params:list=[], shallow_copy_board:bool=False, 
-                 label=None) :
+                 a_idx=-1, label=None) :
         """
         Class Node_Base
         
@@ -49,6 +49,9 @@ class Node_Base(ABC) :
               whether to only create a shallow copy of the game board - caution: improves memory efficiency 
               but may lead to undefined behaviour if either one of the referenced objects is updated
               
+            > a_idx, int, default=-1
+              which of parent's actions this node is derived from
+              
             > label, str, default=None
               label for the node, used when generating summary strings
         """
@@ -62,6 +65,7 @@ class Node_Base(ABC) :
         self.total_score = 0
         self.num_visits  = 0
         self.params      = params
+        self.a_idx       = a_idx
         self.label       = label
         
         
@@ -184,7 +188,7 @@ class Node_Base(ABC) :
             debug_lvl.message(DebugLevel.MEDIUM, f"Select unvisited action {node_label}")
             new_game_board.apply_action(self.actions[a_idx])
             self.children[a_idx] = self.__class__(new_game_board, parent=self, params=self.params, 
-                                                  shallow_copy_board=True, label=node_label)
+                                                  shallow_copy_board=True, a_idx=a_idx, label=node_label)
             return self.children[a_idx]
         
         ##  Otherwise best child is that with highest UCB score
@@ -355,8 +359,8 @@ class Node_Base(ABC) :
 
 class Node_VanillaMCTS(Node_Base) :
     
-    def __init__(self, game_board:GameBoard, parent:Node=None, params:list=[2.], shallow_copy_board:bool=False, 
-                 label=None) :
+    def __init__(self, game_board:GameBoard, parent:Node_Base=None, params:list=[2.], shallow_copy_board:bool=False, 
+                 a_idx=-1, label=None) :
         """
         Class Node_VanillaMCTS
         
