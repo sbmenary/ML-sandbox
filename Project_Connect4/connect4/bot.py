@@ -155,7 +155,7 @@ class Bot_Base(ABC) :
         """
 
         ##  Use timed MCTS to obtain a bot action
-        action = self.choose_action(game_board, duration, max_sim_steps, debug_lvl)
+        action = self.choose_action(game_board, duration, max_sim_steps, create_new_root_node, debug_lvl)
 
         ##  Apply the bot move
         game_board.apply_action(action)
