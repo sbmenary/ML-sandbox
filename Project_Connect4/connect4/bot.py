@@ -1,4 +1,3 @@
-
 ###
 ###  connect4.bot.py
 ###  author: S. Menary [sbmenary@gmail.com]
@@ -12,7 +11,7 @@ from abc  import ABC, abstractmethod
 
 from connect4.utils import DebugLevel
 from connect4.game  import GameBoard
-from connect4.MCTS  import Node_Base, Node_VanillaMCTS
+from connect4.MCTS  import Node_Base, Node_NeuralMCTS, Node_VanillaMCTS
 
 
 
@@ -22,7 +21,7 @@ from connect4.MCTS  import Node_Base, Node_VanillaMCTS
 
 class Bot_Base(ABC) :
     
-    def __init__(self) :
+    def __init__(self, greedy=False) :
         """
         Class Bot_Base
 
@@ -32,6 +31,7 @@ class Bot_Base(ABC) :
 
         ##  Store a copy of the root node to allow it to be updated and queried.
         self.root_node = None
+        self.greedy    = greedy
     
     
     @abstractmethod
@@ -46,8 +46,10 @@ class Bot_Base(ABC) :
                       game_board:GameBoard = None, 
                       duration:int         = 1, 
                       max_sim_steps:int    = -1, 
+                      discount             = 1.,
                       create_new_root_node = True,
-                      debug_lvl:DebugLevel = DebugLevel.MUTE) -> int :
+                      debug_lvl:DebugLevel = DebugLevel.MUTE,
+                      *argv_choose_action) -> int :
         """
         Perform a timed MCTS to choose a move.
 
@@ -62,12 +64,18 @@ class Bot_Base(ABC) :
             >  max_sim_steps, int, default=-1
                maximum number of turns per simulation, if -ve then no maximum
 
+            >  discount, float, default=1.
+               factor by which to multiply rewards with every step
+
             >  create_new_root_node, bool, default=True
                whether to replace the stored root node from previously run MCTS steps
                Note: create_new_root_node=False is ignored if no game_board object is provided
 
             >  debug_lvl, DebugLevel, default=MUTE
                level at which to print debug statements
+
+            > argv_choose_action, *list, default=[]
+              arguments to be passed on to node.choose_action
 
         Returns:
 
@@ -91,15 +99,16 @@ class Bot_Base(ABC) :
         ##  Call timed_MCTS to update tree values 
         root_node.timed_MCTS(duration      = duration     , 
                              max_sim_steps = max_sim_steps, 
+                             discount      = discount,
                              debug_lvl     = debug_lvl    )
-        action = root_node.get_best_action()
+        action = root_node.choose_action(debug_lvl=debug_lvl, *argv_choose_action)
 
         ##  Print debug info
         debug_lvl.message(DebugLevel.HIGH, root_node.tree_summary())
         debug_lvl.message(DebugLevel.LOW, 
-              "Action values are:  " + " ".join([f"{x.get_action_value():.2f}".ljust(6) if x else "N/A   " for x in root_node.children]))
+              "Action values are:  " + "  ".join([f"{x.get_action_value():.3f}".ljust(6) if x else "N/A   " for x in root_node.children]))
         debug_lvl.message(DebugLevel.LOW, 
-              "Visit counts are:   " + " ".join([f"{x.num_visits}".ljust(6) if x else "N/A   " for x in root_node.children]))
+              "Visit counts are:   " + "  ".join([f"{x.num_visits}".ljust(6) if x else "N/A   " for x in root_node.children]))
         debug_lvl.message(DebugLevel.LOW, 
               f"Selecting action {action}")
         
@@ -127,6 +136,7 @@ class Bot_Base(ABC) :
                   game_board:GameBoard, 
                   duration:int         = 1, 
                   max_sim_steps:int    = -1, 
+                  discount:float       = 1., 
                   create_new_root_node = True,
                   debug_lvl:DebugLevel = DebugLevel.MUTE) -> GameBoard :
         """
@@ -143,6 +153,9 @@ class Bot_Base(ABC) :
             >  max_sim_steps, int, default=-1
                maximum number of turns per simulation, if -ve then no maximum
 
+            >  discount, float, default=1.
+               factor by which to multiply rewards with every step
+
             >  create_new_root_node, bool, default=True
                whether to replace the stored root node from previously run MCTS steps
 
@@ -155,11 +168,30 @@ class Bot_Base(ABC) :
         """
 
         ##  Use timed MCTS to obtain a bot action
-        action = self.choose_action(game_board, duration, max_sim_steps, create_new_root_node, debug_lvl)
+        action = self.choose_action(game_board, duration, max_sim_steps, discount, create_new_root_node, debug_lvl)
 
         ##  Apply the bot move
         game_board.apply_action(action)
         return game_board
+
+
+
+###=====================================###
+###   Bot_NeuralMCTS class definition   ###
+###=====================================###
+
+class Bot_NeuralMCTS(Bot_Base) :
+    
+    def __init__(self, model, c=1., greedy=False) :
+        super().__init__(greedy=greedy)
+        self.model  = model
+        self.c      = c
+
+    def create_root_node(self, game_board) :
+        """
+        Create a Neural MCTS node.
+        """
+        return Node_NeuralMCTS(game_board, params=[self.model, self.c], greedy=self.greedy)
 
 
 
@@ -173,6 +205,6 @@ class Bot_VanillaMCTS(Bot_Base) :
         """
         Create a vanilla MCTS node.
         """
-        return Node_VanillaMCTS(game_board)
+        return Node_VanillaMCTS(game_board, label="ROOT", greedy=self.greedy)
     
         

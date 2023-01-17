@@ -39,6 +39,17 @@ class BinaryPlayer(IntEnum):
         if self.value == 1  : return f'{Fore.RED}X{Style.RESET_ALL}'
         if self.value == -1 : return f'{Fore.BLUE}O{Style.RESET_ALL}'
         raise NotImplementedError()
+    
+    @classmethod
+    def from_game_result(cls, result:GameResult) -> BinaryPlayer :
+        """
+        Instantiate game result from a GameResult instance.
+        """
+        if result == GameResult.X    : return BinaryPlayer.X
+        if result == GameResult.O    : return BinaryPlayer.O
+        if result == GameResult.DRAW : return BinaryPlayer.NONE
+        if result == GameResult.NONE : return BinaryPlayer.NONE
+        raise NotImplementedError(f"Could not cast {result} into a BinaryPlayer")
 
     @classmethod
     def invert(cls, other) -> BinaryPlayer:
@@ -305,6 +316,22 @@ class GameResult(IntEnum):
     DRAW = 1
     X    = 2
     O    = 3
+        
+
+    @classmethod
+    def from_piece_value(cls, value:int, none_player_means_draw:bool=True) -> GameResult :
+        """
+        Instantiate game result from a BinaryPlayer value. 
+        
+        Inputs:
+        
+            >  value, int
+               value to be converted to BinaryPlayer instance, and then to GameResult
+               
+            >  none_player_means_draw, bool, default=True
+               if True then interpret BinaryPlayer.NONE as GameResult.DRAW, otherwise GameResult.NONE
+        """
+        return cls.from_player(BinaryPlayer(value), none_player_means_draw=none_player_means_draw)
     
 
     @classmethod
@@ -326,22 +353,6 @@ class GameResult(IntEnum):
             if none_player_means_draw : return GameResult.DRAW
             return GameResult.NONE
         raise NotImplementedError(f"Could not cast {player} into a GameResult")
-        
-
-    @classmethod
-    def from_piece_value(cls, value:int, none_player_means_draw:bool=True) -> GameResult :
-        """
-        Instantiate game result from a BinaryPlayer value. 
-        
-        Inputs:
-        
-            >  value, int
-               value to be converted to BinaryPlayer instance, and then to GameResult
-               
-            >  none_player_means_draw, bool, default=True
-               if True then interpret BinaryPlayer.NONE as GameResult.DRAW, otherwise GameResult.NONE
-        """
-        return cls.from_player(BinaryPlayer(value), none_player_means_draw=none_player_means_draw)
     
 
     def get_game_score_for_player(self, player:BinaryPlayer) -> float :
