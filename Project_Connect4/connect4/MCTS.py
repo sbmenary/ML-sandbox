@@ -7,6 +7,7 @@ Definition of nodes and methods for Monte Carlo Tree Search.
 """
 
 from __future__ import annotations
+from enum       import IntEnum
 from abc        import ABC, abstractmethod
 import time
 
@@ -17,14 +18,29 @@ from connect4.game  import BinaryPlayer, GameBoard, GameResult
 
 
 
-###===============================###
+###=====================================###
+###   PolicyStrategy class definition   ###
+###=====================================###
+
+class PolicyStrategy(IntEnum) :
+    NONE                    = 0
+    GREEDY_PRIOR_VALUE      = 1
+    GREEDY_POSTERIOR_VALUE  = 2
+    GREEDY_PRIOR_POLICY     = 3
+    GREEDY_POSTERIOR_POLICY = 4
+    SAMPLE_PRIOR_POLICY     = 5
+    SAMPLE_POSTERIOR_POLICY = 6
+
+
+
+###================================###
 ###   Node_Base class definition   ###
-###===============================###
+###================================###
 
 class Node_Base(ABC) :
     
     def __init__(self, game_board:GameBoard, parent:Node=None, params:list=[], shallow_copy_board:bool=False, 
-                 a_idx=-1, label=None, greedy=False) :
+                 a_idx=-1, label=None, policy_strategy=PolicyStrategy.GREEDY_POSTERIOR_VALUE) :
         """
         Class Node_Base
         
@@ -54,20 +70,23 @@ class Node_Base(ABC) :
               
             > label, str, default=None
               label for the node, used when generating summary strings
+              
+            > policy_strategy, PolicyStrategy, default=PolicyStrategy.GREEDY_POSTERIOR_VALUE
+              strategy for choosing actions
         """
                 
-        self.game_board  = game_board.deep_copy()
-        self.actions     = game_board.get_available_actions()
-        self.player      = game_board.to_play
-        self.is_terminal = True if len(self.actions) == 0 else False
-        self.children    = [None for a_idx in range(len(self.actions))]
-        self.parent      = parent
-        self.total_score = 0
-        self.num_visits  = 0
-        self.params      = params
-        self.a_idx       = a_idx
-        self.label       = label
-        self.greedy      = greedy
+        self.game_board      = game_board.deep_copy()
+        self.actions         = game_board.get_available_actions()
+        self.player          = game_board.to_play
+        self.is_terminal     = True if len(self.actions) == 0 else False
+        self.children        = [None for a_idx in range(len(self.actions))]
+        self.parent          = parent
+        self.total_score     = 0
+        self.num_visits      = 0
+        self.params          = params
+        self.a_idx           = a_idx
+        self.label           = label
+        self.policy_strategy = policy_strategy
         
         
     def __str__(self) -> str :
@@ -90,37 +109,69 @@ class Node_Base(ABC) :
         ##  Return str
         return ret
 
+
+    def _select_action_greedy_prior_policy(self) -> int :
+        raise NotImplementedError()
+
+
+    def _select_action_greedy_prior_value(self) -> int :
+        raise NotImplementedError()
+
+
+    def _select_action_sample_prior_policy(self) -> int :
+        raise NotImplementedError()
+
         
     def choose_action(self, debug_lvl:DebugLevel=DebugLevel.MUTE, temperature:float=1.) -> int :
         """
-        Choose an action by sampling over the posterior
+        Choose an action according to the story policy_strategy
         """
-        
-        ##  Select greedy action if requested
-        if self.greedy :
-        	debug_lvl.message(DebugLevel.LOW, f"Selecting greedy action")
-        	return self.choose_greedy_action()
 
-        ##  Otherwise sample from posterior distribution
-        posterior = self.get_posterior_policy(temperature=temperature)
-        debug_lvl.message(DebugLevel.LOW, f"Sampling action from posterior policy {' '.join([f'{x:.2f}' for x in posterior])}")
-        return np.random.choice(len(posterior), p=posterior)
-        
-        
-    def choose_greedy_action(self, debug_lvl:DebugLevel=DebugLevel.MUTE) -> int :
-        """
-        Return the optimal action using greedy policy based on the currently stored values.
-        """
+        ##  Make sure a policy strategy is set
+        if not self.policy_strategy :
+            raise RuntimeError("No policy strategy set")
         
         ##  If this is a terminal node then no actions available
         if self.is_terminal : 
             return None
         
-        ##  Find the index of the best child node, and return the corresponding action
-        ##  - if no actions evaluated then argmax will return first action by default
-        child_scores = [c.get_action_value() if c else -np.inf for c in self.children]
-        best_a_idx   = np.argmax(child_scores)
-        return self.actions[best_a_idx]
+        ##  Resolve policy strategy GREEDY_PRIOR_VALUE
+        if self.policy_strategy == PolicyStrategy.GREEDY_PRIOR_VALUE :
+            debug_lvl.message(DebugLevel.LOW, f"Selecting greedy action from prior values")
+            return self._select_action_greedy_prior_value()
+        
+        ##  Resolve policy strategy GREEDY_POSTERIOR_VALUE
+        if self.policy_strategy == PolicyStrategy.GREEDY_POSTERIOR_VALUE :
+            debug_lvl.message(DebugLevel.LOW, f"Selecting greedy action from posterior values")
+            child_scores = [c.get_action_value() if c else -np.inf for c in self.children]
+            best_a_idx   = np.argmax(child_scores)
+            return self.actions[best_a_idx]
+        
+        ##  Resolve policy strategy GREEDY_PRIOR_POLICY
+        if self.policy_strategy == PolicyStrategy.GREEDY_PRIOR_POLICY :
+            debug_lvl.message(DebugLevel.LOW, f"Selecting greedy action from prior policy")
+            return self._select_action_greedy_prior_policy()
+
+        ##  Resolve policy strategy GREEDY_POSTERIOR_POLICY
+        if self.policy_strategy == PolicyStrategy.GREEDY_POSTERIOR_POLICY :
+            posterior = self.get_posterior_policy(temperature=temperature)
+            debug_lvl.message(DebugLevel.LOW, f"Selecting greedy action from posterior policy {' '.join([f'{x:.2f}' for x in posterior])}")
+            return np.argmax(posterior)
+        
+        ##  Resolve policy strategy SAMPLE_PRIOR_VALUE
+        if self.policy_strategy == PolicyStrategy.SAMPLE_PRIOR_POLICY :
+            debug_lvl.message(DebugLevel.LOW, f"Sampling action from prior policy")
+            return self._select_action_sample_prior_policy()
+
+        ##  Resolve policy strategy SAMPLE_POSTERIOR_POLICY
+        if self.policy_strategy == PolicyStrategy.SAMPLE_POSTERIOR_POLICY :
+            posterior = self.get_posterior_policy(temperature=temperature)
+            debug_lvl.message(DebugLevel.LOW, f"Sampling action from posterior policy {' '.join([f'{x:.2f}' for x in posterior])}")
+            return np.random.choice(len(posterior), p=posterior)
+
+        ##  If here then policy strategy not recognised!
+        raise NotImplementedError(f"No policy implemented for strategy {self.policy_strategy.name}")
+
         
         
     def get_action_value(self) -> float :
@@ -212,19 +263,21 @@ class Node_Base(ABC) :
         ##  Uniformly randomly expand from un-visited children
         unvisited_children = [c_idx for c_idx, c in enumerate(self.children) if not c]
         if len(unvisited_children) > 0 :
-            a_idx = np.random.choice(unvisited_children)
+            a_idx  = np.random.choice(unvisited_children)
+            action = self.actions[a_idx]
             new_game_board = self.game_board.deep_copy()
-            node_label = f"{self.game_board.to_play.name}:{self.actions[a_idx]}"
+            node_label = f"{self.game_board.to_play.name}:{action}"
             debug_lvl.message(DebugLevel.MEDIUM, f"Select unvisited action {node_label}")
-            new_game_board.apply_action(self.actions[a_idx])
+            new_game_board.apply_action(action)
             self.children[a_idx] = self.__class__(new_game_board, parent=self, params=self.params, 
-                                                  shallow_copy_board=True, a_idx=a_idx, label=node_label)
+                                                  shallow_copy_board=True, action=action, label=node_label)
             return self.children[a_idx]
         
         ##  Otherwise best child is that with highest UCB score
         a_idx = np.argmax([c.get_expansion_score() for c in self.children])
+        action = self.actions[a_idx]
         best_child = self.children[a_idx]
-        debug_lvl.message(DebugLevel.MEDIUM, f"Select known action {self.game_board.to_play.name}:{self.actions[a_idx]}")
+        debug_lvl.message(DebugLevel.MEDIUM, f"Select known action {self.game_board.to_play.name}:{action}")
         
         ##  If recurse then also select_and_expand from the child node
         if recurse :
@@ -329,8 +382,8 @@ class Node_Base(ABC) :
         ##  - score is from the viewpoint of the parent, since this is the one deciding whether to come here!
         ##  - if no parent exists then this is a ROOT node, and we assign a score of 0. by default
         if self.parent :
-        	if self.parent.player == BinaryPlayer.O :
-        		result = -result
+            if self.parent.player == BinaryPlayer.O :
+                result = -result
         else :
             result = 0.
         debug_lvl.message(DebugLevel.MEDIUM, 
@@ -363,7 +416,7 @@ class Node_Base(ABC) :
 class Node_NeuralMCTS(Node_Base) :
     
     def __init__(self, game_board:GameBoard, parent:Node_Base=None, params:list=[], shallow_copy_board:bool=False, 
-                 a_idx=-1, label=None, greedy=False) :
+                 action=-1, label=None, policy_strategy=PolicyStrategy.SAMPLE_POSTERIOR_POLICY) :
         """
         Class Node_NeuralMCTS
         
@@ -393,26 +446,62 @@ class Node_NeuralMCTS(Node_Base) :
               
             > label, str, default=None
               label for the node, used when generating summary strings
+              
+            > policy_strategy, PolicyStrategy, default=PolicyStrategy.SAMPLE_POSTERIOR_POLICY
+              strategy for choosing actions
         """
 
         ##  Call Node_Base initialiser with params=[model, c]
-        super().__init__(game_board, parent, params, shallow_copy_board, a_idx, label, greedy)
+        super().__init__(game_board, parent, params, shallow_copy_board, action, label, policy_strategy)
         
         ##  Resolve the prior_prob for this node
-        self.prior_prob = parent.child_priors[a_idx] if parent else 0
+        self.prior_prob = parent.child_priors[action] if parent else 0
         
         ##  Resolve the hyper-params
         self.model   = params[0]
         self.c       = params[1]
         
         ##  Construct model input
-        model_input = game_board.board
+        ##  -  if this node is player O, multiply model_input by -1, so it becomes "from current player's perspective"
+        model_input = game_board.board.copy()
         model_input = model_input.reshape((1, model_input.shape[0], model_input.shape[1], 1))
+        if self.player == BinaryPlayer.O : model_input = -model_input
         
         ##  Store model input and output
+        ##  -  if this node is player O, multiply prior_value by -1, so it becomes "from player X's perspective"
+        ##  -  N.B. this is true because model input is from our own perspective
         self.model_input = model_input[0,:,:,:]
         self.child_priors, self.prior_value = self.model(model_input)
         self.child_priors, self.prior_value = self.child_priors.numpy()[0], self.prior_value.numpy()[0,0]
+        if self.player == BinaryPlayer.O : self.prior_value = -self.prior_value
+
+
+    def _select_action_greedy_prior_policy(self) -> int :
+        prior = self.get_prior_policy()
+        return np.argmax(prior)
+
+
+    def _select_action_greedy_prior_value(self) -> int :
+        actions, values = [], []
+        for a_idx, action in enumerate(self.actions) :
+            child_node = self.children[a_idx]
+            if not child_node :
+                new_game_board = self.game_board.deep_copy()
+                new_game_board.apply_action(action)
+                child_node = self.__class__(new_game_board, parent=self, params=self.params, 
+                                            shallow_copy_board=True, action=action)
+            v = child_node.prior_value
+            actions.append(action)
+            values .append(v)
+        values = np.array(values)
+        if self.player == BinaryPlayer.O :
+            values = -values
+        return actions[np.argmax(values)]
+
+
+    def _select_action_sample_prior_policy(self) -> int :
+        prior = self.get_prior_policy()
+        return np.random.choice(len(prior), p=prior)
         
         
     def get_expansion_score(self) -> float :
@@ -429,6 +518,21 @@ class Node_NeuralMCTS(Node_Base) :
         
         ##  Otherwise calculate UCT score
         return mean_score + self.c*self.prior_prob*np.sqrt(self.parent.num_visits) / (1+self.num_visits)
+    
+    
+    def get_prior_policy(self) -> np.ndarray :
+        """
+        Get the prior policy.
+        """
+        prior = []
+        for a_idx in range(self.game_board.horizontal_size) :
+            if a_idx not in self.actions :
+                prior.append(0)
+                continue
+            prior.append(self.child_priors[a_idx])
+        prior = np.array(prior)
+        prior = prior / prior.sum()
+        return prior
     
     
     def simulate(self, max_sim_steps:int=-1, discount:float=1., debug_lvl:DebugLevel=DebugLevel.MUTE) -> float :
@@ -455,7 +559,7 @@ class Node_NeuralMCTS(Node_Base) :
 class Node_VanillaMCTS(Node_Base) :
     
     def __init__(self, game_board:GameBoard, parent:Node_Base=None, params:list=[2.], shallow_copy_board:bool=False, 
-                 a_idx=-1, label=None, greedy=False) :
+                 action=-1, label=None, policy_strategy=PolicyStrategy.GREEDY_POSTERIOR_VALUE) :
         """
         Class Node_VanillaMCTS
         
@@ -485,10 +589,13 @@ class Node_VanillaMCTS(Node_Base) :
               
             > label, str, default=None
               label for the node, used when generating summary strings
+              
+            > policy_strategy, PolicyStrategy, default=PolicyStrategy.GREEDY_POSTERIOR_VALUE
+              strategy for choosing actions
         """
         
         ##  Call Node_Base initialiser with params=[UCB_c]
-        super().__init__(game_board, parent, params, shallow_copy_board, a_idx, label, greedy)
+        super().__init__(game_board, parent, params, shallow_copy_board, action, label, policy_strategy)
         
         
     def get_expansion_score(self) -> float :
