@@ -48,8 +48,9 @@ class Bot_Base(ABC) :
                       max_sim_steps:int    = -1, 
                       discount             = 1.,
                       create_new_root_node = True,
+                      policy_strategy      = PolicyStrategy.NONE, 
                       debug_lvl:DebugLevel = DebugLevel.MUTE,
-                      *argv_choose_action) -> int :
+                      argv_choose_action   = []) -> int :
         """
         Perform a timed MCTS to choose a move.
 
@@ -71,11 +72,14 @@ class Bot_Base(ABC) :
                whether to replace the stored root node from previously run MCTS steps
                Note: create_new_root_node=False is ignored if no game_board object is provided
 
+            >  policy_strategy, PolicyStrategy, default=NONE
+               policy strategy by which to choose actions
+
             >  debug_lvl, DebugLevel, default=MUTE
                level at which to print debug statements
 
-            > argv_choose_action, *list, default=[]
-              arguments to be passed on to node.choose_action
+            >  argv_choose_action, list, default=[]
+               arguments to be passed on to node.choose_action
 
         Returns:
 
@@ -96,12 +100,16 @@ class Bot_Base(ABC) :
         else :
             raise RuntimeError("Requested to use a previously stored root node but none available")
 
-        ##  Call timed_MCTS to update tree values 
+        ##  Call timed_MCTS to update tree values
         root_node.timed_MCTS(duration      = duration     , 
                              max_sim_steps = max_sim_steps, 
                              discount      = discount,
                              debug_lvl     = debug_lvl    )
-        action = root_node.choose_action(debug_lvl=debug_lvl, *argv_choose_action)
+
+        ##  Choose action, over-riding stored policy_strategy if a new one is provided
+        if not policy_strategy :
+            policy_strategy = self.policy_strategy
+        action = root_node.choose_action(*argv_choose_action, policy_strategy=policy_strategy, debug_lvl=debug_lvl)
 
         ##  Print debug info
         debug_lvl.message(DebugLevel.HIGH, root_node.tree_summary())
@@ -138,6 +146,7 @@ class Bot_Base(ABC) :
                   max_sim_steps:int    = -1, 
                   discount:float       = 1., 
                   create_new_root_node = True,
+                  policy_strategy      = PolicyStrategy.NONE, 
                   debug_lvl:DebugLevel = DebugLevel.MUTE) -> GameBoard :
         """
         Run MCTS to choose an action and apply it to the game board.
@@ -168,7 +177,7 @@ class Bot_Base(ABC) :
         """
 
         ##  Use timed MCTS to obtain a bot action
-        action = self.choose_action(game_board, duration, max_sim_steps, discount, create_new_root_node, debug_lvl)
+        action = self.choose_action(game_board, duration, max_sim_steps, discount, create_new_root_node, policy_strategy, debug_lvl)
 
         ##  Apply the bot move
         game_board.apply_action(action)
@@ -187,7 +196,7 @@ class Bot_NeuralMCTS(Bot_Base) :
         self.model  = model
         self.c      = c
 
-    def create_root_node(self, game_board) :
+    def create_root_node(self, game_board:GameBoard) -> Node_Base :
         """
         Create a Neural MCTS node.
         """
@@ -201,7 +210,7 @@ class Bot_NeuralMCTS(Bot_Base) :
 
 class Bot_VanillaMCTS(Bot_Base) :
     
-    def create_root_node(self, game_board) :
+    def create_root_node(self, game_board:GameBoard) -> Node_Base :
         """
         Create a vanilla MCTS node.
         """

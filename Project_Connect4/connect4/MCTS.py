@@ -23,13 +23,17 @@ from connect4.game  import BinaryPlayer, GameBoard, GameResult
 ###=====================================###
 
 class PolicyStrategy(IntEnum) :
+    """
+    An enumeration for the strategy for choosing actions.
+    """
     NONE                    = 0
-    GREEDY_PRIOR_VALUE      = 1
-    GREEDY_POSTERIOR_VALUE  = 2
-    GREEDY_PRIOR_POLICY     = 3
-    GREEDY_POSTERIOR_POLICY = 4
-    SAMPLE_PRIOR_POLICY     = 5
-    SAMPLE_POSTERIOR_POLICY = 6
+    UNIFORM_RANDOM          = 1
+    GREEDY_PRIOR_VALUE      = 2
+    GREEDY_POSTERIOR_VALUE  = 3
+    GREEDY_PRIOR_POLICY     = 4
+    GREEDY_POSTERIOR_POLICY = 5
+    SAMPLE_PRIOR_POLICY     = 6
+    SAMPLE_POSTERIOR_POLICY = 7
 
 
 
@@ -40,7 +44,7 @@ class PolicyStrategy(IntEnum) :
 class Node_Base(ABC) :
     
     def __init__(self, game_board:GameBoard, parent:Node=None, params:list=[], shallow_copy_board:bool=False, 
-                 a_idx=-1, label=None, policy_strategy=PolicyStrategy.GREEDY_POSTERIOR_VALUE) :
+                 action=-1, label=None, policy_strategy=PolicyStrategy.GREEDY_POSTERIOR_VALUE) :
         """
         Class Node_Base
         
@@ -65,7 +69,7 @@ class Node_Base(ABC) :
               whether to only create a shallow copy of the game board - caution: improves memory efficiency 
               but may lead to undefined behaviour if either one of the referenced objects is updated
               
-            > a_idx, int, default=-1
+            > action, int, default=-1
               which of parent's actions this node is derived from
               
             > label, str, default=None
@@ -84,7 +88,7 @@ class Node_Base(ABC) :
         self.total_score     = 0
         self.num_visits      = 0
         self.params          = params
-        self.a_idx           = a_idx
+        self.action          = action
         self.label           = label
         self.policy_strategy = policy_strategy
         
@@ -122,55 +126,62 @@ class Node_Base(ABC) :
         raise NotImplementedError()
 
         
-    def choose_action(self, debug_lvl:DebugLevel=DebugLevel.MUTE, temperature:float=1.) -> int :
+    def choose_action(self, temperature:float=1., policy_strategy=PolicyStrategy.NONE, debug_lvl:DebugLevel=DebugLevel.MUTE) -> int :
         """
-        Choose an action according to the story policy_strategy
+        Choose an action according to the policy_strategy, falling back to stored value if NONE provided
         """
 
         ##  Make sure a policy strategy is set
-        if not self.policy_strategy :
-            raise RuntimeError("No policy strategy set")
+        if not policy_strategy :
+            if not self.policy_strategy :
+                raise RuntimeError("No policy strategy set")
+                policy_strategy = self.policy_strategy
         
         ##  If this is a terminal node then no actions available
         if self.is_terminal : 
             return None
+
+        ##  Resolve policy strategy UNIFORM_RANDOM
+        if policy_strategy == PolicyStrategy.UNIFORM_RANDOM :
+            debug_lvl.message(DebugLevel.LOW, f"Selecting uniformly random action")
+            return np.random.choice(self.actions)
         
         ##  Resolve policy strategy GREEDY_PRIOR_VALUE
-        if self.policy_strategy == PolicyStrategy.GREEDY_PRIOR_VALUE :
+        if policy_strategy == PolicyStrategy.GREEDY_PRIOR_VALUE :
             debug_lvl.message(DebugLevel.LOW, f"Selecting greedy action from prior values")
             return self._select_action_greedy_prior_value()
         
         ##  Resolve policy strategy GREEDY_POSTERIOR_VALUE
-        if self.policy_strategy == PolicyStrategy.GREEDY_POSTERIOR_VALUE :
+        if policy_strategy == PolicyStrategy.GREEDY_POSTERIOR_VALUE :
             debug_lvl.message(DebugLevel.LOW, f"Selecting greedy action from posterior values")
             child_scores = [c.get_action_value() if c else -np.inf for c in self.children]
             best_a_idx   = np.argmax(child_scores)
             return self.actions[best_a_idx]
         
         ##  Resolve policy strategy GREEDY_PRIOR_POLICY
-        if self.policy_strategy == PolicyStrategy.GREEDY_PRIOR_POLICY :
+        if policy_strategy == PolicyStrategy.GREEDY_PRIOR_POLICY :
             debug_lvl.message(DebugLevel.LOW, f"Selecting greedy action from prior policy")
             return self._select_action_greedy_prior_policy()
 
         ##  Resolve policy strategy GREEDY_POSTERIOR_POLICY
-        if self.policy_strategy == PolicyStrategy.GREEDY_POSTERIOR_POLICY :
+        if policy_strategy == PolicyStrategy.GREEDY_POSTERIOR_POLICY :
             posterior = self.get_posterior_policy(temperature=temperature)
             debug_lvl.message(DebugLevel.LOW, f"Selecting greedy action from posterior policy {' '.join([f'{x:.2f}' for x in posterior])}")
             return np.argmax(posterior)
         
         ##  Resolve policy strategy SAMPLE_PRIOR_VALUE
-        if self.policy_strategy == PolicyStrategy.SAMPLE_PRIOR_POLICY :
+        if policy_strategy == PolicyStrategy.SAMPLE_PRIOR_POLICY :
             debug_lvl.message(DebugLevel.LOW, f"Sampling action from prior policy")
             return self._select_action_sample_prior_policy()
 
         ##  Resolve policy strategy SAMPLE_POSTERIOR_POLICY
-        if self.policy_strategy == PolicyStrategy.SAMPLE_POSTERIOR_POLICY :
+        if policy_strategy == PolicyStrategy.SAMPLE_POSTERIOR_POLICY :
             posterior = self.get_posterior_policy(temperature=temperature)
             debug_lvl.message(DebugLevel.LOW, f"Sampling action from posterior policy {' '.join([f'{x:.2f}' for x in posterior])}")
             return np.random.choice(len(posterior), p=posterior)
 
         ##  If here then policy strategy not recognised!
-        raise NotImplementedError(f"No policy implemented for strategy {self.policy_strategy.name}")
+        raise NotImplementedError(f"No policy implemented for strategy {policy_strategy.name}")
 
         
         

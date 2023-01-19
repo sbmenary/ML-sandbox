@@ -25,7 +25,7 @@ all_threads = []
         
 class BaseThread(Thread) :
     
-    def __init__(self):
+    def __init__(self) :
         """
         Base class for creating custom threads. 
            > kill method sets an internal flag that orders thread to stop at the next opportunity
@@ -39,7 +39,7 @@ class BaseThread(Thread) :
         all_threads.append(self)
             
             
-    def info(self, message:str) :
+    def info(self, message:str) -> None :
         """
         Safely print message to stdout by acquiring and releasing internal thread lock
 
@@ -54,7 +54,7 @@ class BaseThread(Thread) :
         self.lock.release()
         
 
-    def kill(self, killed:bool=True, verbose:bool=False) :
+    def kill(self, killed:bool=True, verbose:bool=False) -> None :
         """
         Set internal killed flag to the value provided.
 
@@ -76,7 +76,7 @@ class BaseThread(Thread) :
 ###   WorkerThread class definition   ###
 ###===================================###
 
-class WorkerThread(BaseThread):
+class WorkerThread(BaseThread) :
     
     def __init__(self, num_proc:int, num_results_per_proc:int, func, func_args:list=[], queue_check_freq:float=1.) :
         """
@@ -110,7 +110,7 @@ class WorkerThread(BaseThread):
         self.results              = []
         
 
-    def run(self) :
+    def run(self) -> None :
         """
         Spawn subprocesses and keeping reading results from the Queue until all expected results are present.
         Loop is also exited if self.killed flag is set.
@@ -149,9 +149,9 @@ class WorkerThread(BaseThread):
 ###   MonitorThread class definition   ###
 ###====================================###
 
-class MonitorThread(BaseThread):
+class MonitorThread(BaseThread) :
     
-    def __init__(self, worker:WorkerThread, frequency:float=1.):
+    def __init__(self, worker:WorkerThread, frequency:float=1.) :
         """
         Report on the progress of the Worker thread provided in filling up worker.results.
 
@@ -168,7 +168,7 @@ class MonitorThread(BaseThread):
         self.frequency = frequency
         
 
-    def run(self):
+    def run(self) -> None :
         """
         Keep printing updates on the progress of worker until worker.results reaches desired length, or the thread is killed.
         """
@@ -200,7 +200,7 @@ class MonitorThread(BaseThread):
 ###======================###
 
 
-def generate_from_processes(func, func_args:list=[], num_proc:int=1, num_results_per_proc:int=1, mon_freq:float=1.) :
+def generate_from_processes(func, func_args:list=[], num_proc:int=1, num_results_per_proc:int=1, mon_freq:float=1.) -> list :
     """
     Create worker and monitor threads to generate a number of datapoints using the method func, and return the results.
 
@@ -242,7 +242,7 @@ def generate_from_processes(func, func_args:list=[], num_proc:int=1, num_results
 
 
 
-def kill_threads(threads:list=None, verbose:bool=False) :
+def kill_threads(threads:list=None, verbose:bool=False) -> None :
     """
     Call kill() method for all custom threads in the list provided. If no list then apply to all custom threads created thus far.
 
@@ -265,3 +265,5 @@ def kill_threads(threads:list=None, verbose:bool=False) :
         if not hasattr(thread, "kill") :
             continue
         thread.kill(verbose=verbose)
+
+        
