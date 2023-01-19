@@ -6,8 +6,8 @@
 Definition of abstract objects for running data generation methods in parallel subprocesses, managed by parallel worker and monitor threads.
 """
 
-import sys, time
 from __future__ import annotations
+import sys, time
 
 from threading import Lock, Thread
 
@@ -266,4 +266,3 @@ def kill_threads(threads:list=None, verbose:bool=False) -> None :
             continue
         thread.kill(verbose=verbose)
 
-        
