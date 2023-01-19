@@ -22,7 +22,7 @@ from connect4.bot   import Bot_NeuralMCTS, Bot_VanillaMCTS
 ###   Method defitions   ###
 ###======================###
 
-def get_training_data_from_bot_game(model, duration:int=1, discount:float=1., random_first_move:bool=True, debug_lvl:DebugLevel=DebugLevel.MUTE) -> tuple :
+def get_training_data_from_bot_game(model, duration:int=1, discount:float=1., num_random_moves:int=0, debug_lvl:DebugLevel=DebugLevel.MUTE) -> tuple :
     """
     Generate training data by playing a bot game against itself.
 
@@ -34,8 +34,8 @@ def get_training_data_from_bot_game(model, duration:int=1, discount:float=1., ra
         >  discount, float, default=1.
            factor by which to multiply rewards with every step
 
-        >  random_first_move, bool, default=True
-           whether to play the first game move using a uniformly random policy
+        >  num_random_moves, int, default=0
+           number of turns to use a uniformly random policy for at the start of the game
 
         >  debug_lvl, DebugLevel, default=MUTE
            level at which to print debug statements
@@ -61,10 +61,10 @@ def get_training_data_from_bot_game(model, duration:int=1, discount:float=1., ra
     ##  Take moves until end of game, storing model in and target out at each turn
     ##  -  values equal to +1 if the move is player X and -1 for player O
     ##  -  we do not invert sign of model_input because this already done by root_node
-    ##  -  for first move, use a uniform random play strategy if configured
-    result = game_board.get_result()
-    policy_strategy = PolicyStrategy.UNIFORM_RANDOM if random_first_move else PolicyStrategy.NONE
+    ##  -  for first num_random_moves moves, use a uniform random play strategy
+    num_moves, result, policy_strategy = 0, game_board.get_result(), PolicyStrategy.UNIFORM_RANDOM
     while not result :
+        if num_moves >= num_random_moves : policy_strategy = PolicyStrategy.NONE
         bot.take_move(game_board, duration=duration, discount=discount, policy_strategy=policy_strategy, debug_lvl=debug_lvl)
         debug_lvl.message(DebugLevel.LOW, game_board)
         if model : 
@@ -76,7 +76,7 @@ def get_training_data_from_bot_game(model, duration:int=1, discount:float=1., ra
         posteriors  .append(bot.root_node.get_posterior_policy())
         values      .append(bot.root_node.player.value)
         result = game_board.get_result()
-        policy_strategy = PolicyStrategy.NONE
+        num_moves += 1
         
     ##  Backpropagate the value of the game result to all preceeding moves
     ##  -  at each turn, whether that player won/lost is taken account by the sign of the value multiplied by the sign of backprop_value
