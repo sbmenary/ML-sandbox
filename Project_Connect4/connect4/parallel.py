@@ -40,26 +40,27 @@ class BaseThread(Thread) :
         
 class WorkerThread(BaseThread):
     
-    def __init__(self, target, num_processes, num_results_proc, queue_check_freq=1, func_args=[]):
+    def __init__(self, num_proc, num_results_per_proc, func, func_args=[], queue_check_freq=1.):
         BaseThread.__init__(self)
-        self.target           = target
-        self.num_processes    = num_processes
-        self.num_results_proc = num_results_proc
-        self.queue_check_freq = queue_check_freq
-        self.func_args        = func_args
-        self.results          = []
+        self.num_proc             = num_proc
+        self.num_results_per_proc = num_results_per_proc
+        self.queue_check_freq     = queue_check_freq
+        self.func                 = func
+        self.func_args            = func_args
+        self.results              = []
         
     def run(self):
         self.kill(False)
         out_queue = Queue()
 
         processes = []
-        for proc_idx in range(self.num_processes) :
-            p = Process(target=self.target, args=[proc_idx, self.num_results_proc, out_queue]+self.func_args)
+        for proc_idx in range(self.num_proc) :
+            proc_args = [proc_idx, self.num_results_per_proc, out_queue, self.func_args]
+            p = Process(target=self.func, args=proc_args)
             p.start()
             processes.append(p)
 
-        exp_length = self.num_processes*self.num_results_proc
+        exp_length = self.num_proc*self.num_results_per_proc
         while len(self.results) < exp_length and not self.killed :
             time.sleep(self.queue_check_freq)
             while not out_queue.empty() :
@@ -78,7 +79,7 @@ class MonitorThread(BaseThread):
         
     def run(self):
         self.kill(False)
-        exp_length = self.worker.num_processes*self.worker.num_results_proc
+        exp_length = self.worker.num_proc*self.worker.num_results_per_proc
         start_time = time.time()
         self.info(f"\rGenerating {exp_length} results")
         while len(self.worker.results) < exp_length and not self.killed :
@@ -89,10 +90,35 @@ class MonitorThread(BaseThread):
             self.info(f"\nMonitor killed [t={time.time()-start_time:.2f}s] [n={len(self.worker.results)}]\n")
         else :
             self.info(f"\nGeneration complete [t={time.time()-start_time:.2f}s] [n={len(self.worker.results)}]\n")
+    
+    
+
+def generate_from_processes(func, func_args=[], num_proc:int=1, num_results_per_proc:int=1, mon_freq:int=1.) :
+    """
+    Method generate_from_processes
+    """
+    
+    ##  Create worker and monitor processes
+    worker  = WorkerThread(num_proc, num_results_per_proc, func, func_args=func_args)
+    monitor = MonitorThread(worker, frequency=mon_freq)
+
+    ##  Begin processes in parallel (monitor first)
+    monitor.start()
+    worker .start()
+
+    ##  Wait for processes to complete (worker first)
+    worker .join()
+    monitor.join()
+    
+    ##  Return results from worker process
+    return worker.results
 
 
 
 def kill_threads(threads=None, verbose=False) :
+    """
+    Method kill_threads
+    """
     if type(threads) is type(None) :
         global all_threads
         threads = all_threads
