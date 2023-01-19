@@ -34,6 +34,7 @@ class PolicyStrategy(IntEnum) :
     GREEDY_POSTERIOR_POLICY = 5
     SAMPLE_PRIOR_POLICY     = 6
     SAMPLE_POSTERIOR_POLICY = 7
+    NOISY_POSTERIOR_POLICY  = 8
 
 
 
@@ -178,6 +179,18 @@ class Node_Base(ABC) :
         if policy_strategy == PolicyStrategy.SAMPLE_POSTERIOR_POLICY :
             posterior = self.get_posterior_policy(temperature=temperature)
             debug_lvl.message(DebugLevel.LOW, f"Sampling action from posterior policy {' '.join([f'{x:.2f}' for x in posterior])}")
+            return np.random.choice(len(posterior), p=posterior)
+
+        ##  Resolve policy strategy NOISY_POSTERIOR_POLICY
+        if policy_strategy == PolicyStrategy.NOISY_POSTERIOR_POLICY :
+            posterior = self.get_posterior_policy(temperature=temperature)
+            debug_lvl.message(DebugLevel.LOW, f"Adding noise to posterior policy {' '.join([f'{x:.2f}' for x in posterior])}")
+            noisy_idices = []
+            for idx, p in enumerate(posterior) :
+            	if p > 1e-8 : noisy_idices.append(idx)
+            for idx, p in enumerate(posterior) :
+            	posterior[idx] = 0.75*p + 0.25/len(noisy_idices)
+            debug_lvl.message(DebugLevel.LOW, f"Sampling action from noisy policy {' '.join([f'{x:.2f}' for x in posterior])}")
             return np.random.choice(len(posterior), p=posterior)
 
         ##  If here then policy strategy not recognised!

@@ -22,7 +22,8 @@ from connect4.bot   import Bot_NeuralMCTS, Bot_VanillaMCTS
 ###   Method defitions   ###
 ###======================###
 
-def get_training_data_from_bot_game(model, duration:int=1, discount:float=1., num_random_moves:int=0, debug_lvl:DebugLevel=DebugLevel.MUTE) -> tuple :
+def get_training_data_from_bot_game(model, duration:int=1, discount:float=1., num_random_moves:int=0, base_policy:PolicyStrategy=PolicyStrategy.NONE, 
+                                    debug_lvl:DebugLevel=DebugLevel.MUTE) -> tuple :
     """
     Generate training data by playing a bot game against itself.
 
@@ -36,6 +37,9 @@ def get_training_data_from_bot_game(model, duration:int=1, discount:float=1., nu
 
         >  num_random_moves, int, default=0
            number of turns to use a uniformly random policy for at the start of the game
+
+        >  base_policy, PolicyStrategy, default=NONE
+           policy to apply to all moves after initial uniform random period, if NONE then fallback to class default
 
         >  debug_lvl, DebugLevel, default=MUTE
            level at which to print debug statements
@@ -64,7 +68,7 @@ def get_training_data_from_bot_game(model, duration:int=1, discount:float=1., nu
     ##  -  for first num_random_moves moves, use a uniform random play strategy
     num_moves, result, policy_strategy = 0, game_board.get_result(), PolicyStrategy.UNIFORM_RANDOM
     while not result :
-        if num_moves >= num_random_moves : policy_strategy = PolicyStrategy.NONE
+        if num_moves >= num_random_moves : policy_strategy = base_policy
         bot.take_move(game_board, duration=duration, discount=discount, policy_strategy=policy_strategy, debug_lvl=debug_lvl)
         debug_lvl.message(DebugLevel.LOW, game_board)
         if model : 
