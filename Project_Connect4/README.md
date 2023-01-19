@@ -6,6 +6,8 @@ Brief: a package for playing games of Connect 4 through a CLI, and especilaly fo
 
 ---
 
+## Overview
+
 Development is performed in Jupyter notebooks, where objects are designed before being pushed into a backend framework.
 
 Package structure:
@@ -17,3 +19,13 @@ Package structure:
 > `dev` contains notebooks for developing and training the bots
 
 > `legacy` contains old notebooks with useful code snippets we may wish to use again
+
+---
+
+## Reproducibility
+
+> Python version is `3.10.8`
+
+> Numpy version is `1.23.2`
+
+> Tensorflow version is `2.11.0`
