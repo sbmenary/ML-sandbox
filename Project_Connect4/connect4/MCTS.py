@@ -150,7 +150,7 @@ class Node_Base(ABC) :
         ##  Resolve policy strategy GREEDY_PRIOR_VALUE
         if policy_strategy == PolicyStrategy.GREEDY_PRIOR_VALUE :
             debug_lvl.message(DebugLevel.LOW, f"Selecting greedy action from prior values")
-            return self._select_action_greedy_prior_value()
+            return self._select_action_greedy_prior_value(debug_lvl=debug_lvl)
         
         ##  Resolve policy strategy GREEDY_POSTERIOR_VALUE
         if policy_strategy == PolicyStrategy.GREEDY_POSTERIOR_VALUE :
@@ -162,7 +162,7 @@ class Node_Base(ABC) :
         ##  Resolve policy strategy GREEDY_PRIOR_POLICY
         if policy_strategy == PolicyStrategy.GREEDY_PRIOR_POLICY :
             debug_lvl.message(DebugLevel.LOW, f"Selecting greedy action from prior policy")
-            return self._select_action_greedy_prior_policy()
+            return self._select_action_greedy_prior_policy(debug_lvl=debug_lvl)
 
         ##  Resolve policy strategy GREEDY_POSTERIOR_POLICY
         if policy_strategy == PolicyStrategy.GREEDY_POSTERIOR_POLICY :
@@ -173,7 +173,7 @@ class Node_Base(ABC) :
         ##  Resolve policy strategy SAMPLE_PRIOR_VALUE
         if policy_strategy == PolicyStrategy.SAMPLE_PRIOR_POLICY :
             debug_lvl.message(DebugLevel.LOW, f"Sampling action from prior policy")
-            return self._select_action_sample_prior_policy()
+            return self._select_action_sample_prior_policy(debug_lvl=debug_lvl)
 
         ##  Resolve policy strategy SAMPLE_POSTERIOR_POLICY
         if policy_strategy == PolicyStrategy.SAMPLE_POSTERIOR_POLICY :
@@ -500,12 +500,13 @@ class Node_NeuralMCTS(Node_Base) :
         if self.player == BinaryPlayer.O : self.prior_value = -self.prior_value
 
 
-    def _select_action_greedy_prior_policy(self) -> int :
+    def _select_action_greedy_prior_policy(self, debug_lvl:DebugLevel=DebugLevel.MUTE) -> int :
         prior = self.get_prior_policy()
+        debug_lvl.message(DebugLevel.LOW, f"Prior policy is {' '.join([f'{x:.2f}' for x in prior])}")
         return np.argmax(prior)
 
 
-    def _select_action_greedy_prior_value(self) -> int :
+    def _select_action_greedy_prior_value(self, debug_lvl:DebugLevel=DebugLevel.MUTE) -> int :
         actions, values = [], []
         for a_idx, action in enumerate(self.actions) :
             child_node = self.children[a_idx]
@@ -520,11 +521,13 @@ class Node_NeuralMCTS(Node_Base) :
         values = np.array(values)
         if self.player == BinaryPlayer.O :
             values = -values
+        debug_lvl.message(DebugLevel.LOW, f"Prior values are {' '.join([f'{x:.2f}' for x in prior])}")
         return actions[np.argmax(values)]
 
 
-    def _select_action_sample_prior_policy(self) -> int :
+    def _select_action_sample_prior_policy(self, debug_lvl:DebugLevel=DebugLevel.MUTE) -> int :
         prior = self.get_prior_policy()
+        debug_lvl.message(DebugLevel.LOW, f"Prior policy is {' '.join([f'{x:.2f}' for x in prior])}")
         return np.random.choice(len(prior), p=prior)
         
         

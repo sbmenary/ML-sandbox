@@ -95,7 +95,8 @@ def get_training_data_from_bot_game(model, duration:int=1, discount:float=1., nu
 
 
 
-def play_bot_game(model1, model2, duration:int=1, discount:float=1., debug_lvl:DebugLevel=DebugLevel.MUTE) -> dict :
+def play_bot_game(model1, model2, duration:int=1, discount:float=1., bot1_policy:PolicyStrategy=PolicyStrategy.NONE, bot2_policy:PolicyStrategy=PolicyStrategy.NONE,
+                 debug_lvl:DebugLevel=DebugLevel.MUTE) -> dict :
     """
     Play a game between two bots and return the result
 
@@ -121,13 +122,16 @@ def play_bot_game(model1, model2, duration:int=1, discount:float=1., debug_lvl:D
         >  dict: result of the game along with which model was randomly assigned to players X and O
     """
 
+    ##  Resolve bot policies
+    if not bot1_policy : bot1_policy = PolicyStrategy.GREEDY_POSTERIOR_POLICY if model1 else PolicyStrategy.GREEDY_POSTERIOR_VALUE
+    if not bot2_policy : bot2_policy = PolicyStrategy.GREEDY_POSTERIOR_POLICY if model2 else PolicyStrategy.GREEDY_POSTERIOR_VALUE
+
     ##  Create game and bots
-    policy_strategy = PolicyStrategy.SAMPLE_POSTERIOR_POLICY
     game_board = GameBoard()
-    bot1       = Bot_NeuralMCTS(model1, policy_strategy=policy_strategy) if model1 else Bot_VanillaMCTS(policy_strategy=policy_strategy)
-    bot2       = Bot_NeuralMCTS(model2, policy_strategy=policy_strategy) if model2 else Bot_VanillaMCTS(policy_strategy=policy_strategy)
-    debug_lvl.message(DebugLevel.LOW, f"Using bot1 {bot1}")
-    debug_lvl.message(DebugLevel.LOW, f"Using bot2 {bot2}")
+    bot1       = Bot_NeuralMCTS(model1, policy_strategy=bot1_policy) if model1 else Bot_VanillaMCTS(policy_strategy=bot1_policy)
+    bot2       = Bot_NeuralMCTS(model2, policy_strategy=bot2_policy) if model2 else Bot_VanillaMCTS(policy_strategy=bot2_policy)
+    debug_lvl.message(DebugLevel.LOW, f"Using bot1 {bot1} with policy {bot1_policy.name}")
+    debug_lvl.message(DebugLevel.LOW, f"Using bot2 {bot2} with policy {bot2_policy.name}")
     debug_lvl.message(DebugLevel.LOW, game_board)
     
     ##  Randomly shuffle who goes first, and keep track of the result

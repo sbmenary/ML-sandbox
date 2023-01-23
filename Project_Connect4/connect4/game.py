@@ -195,7 +195,7 @@ class GameBoard :
         new_gameboard                 = GameBoard(self.horizontal_size, self.vertical_size, self.target_length)
         new_gameboard.board           = self.board.copy()
         new_gameboard.to_play         = self.to_play
-        new_gameboard.applied_actions = self.applied_actions
+        new_gameboard.applied_actions = self.applied_actions.copy()
         return new_gameboard
         
         
