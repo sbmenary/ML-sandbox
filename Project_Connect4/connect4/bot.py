@@ -21,7 +21,7 @@ from connect4.MCTS  import Node_Base, Node_NeuralMCTS, Node_VanillaMCTS, PolicyS
 
 class Bot_Base(ABC) :
     
-    def __init__(self, policy_strategy=PolicyStrategy.GREEDY_POSTERIOR_VALUE) :
+    def __init__(self, noise_lvl:float=0.25, policy_strategy:PolicyStrategy=PolicyStrategy.GREEDY_POSTERIOR_VALUE) :
         """
         Class Bot_Base
 
@@ -31,6 +31,7 @@ class Bot_Base(ABC) :
 
         ##  Store a copy of the root node to allow it to be updated and queried.
         self.root_node       = None
+        self.noise_lvl       = noise_lvl
         self.policy_strategy = policy_strategy
     
     
@@ -191,16 +192,16 @@ class Bot_Base(ABC) :
 
 class Bot_NeuralMCTS(Bot_Base) :
     
-    def __init__(self, model, c=1., policy_strategy=PolicyStrategy.SAMPLE_POSTERIOR_POLICY) :
-        super().__init__(policy_strategy=policy_strategy)
-        self.model  = model
-        self.c      = c
+    def __init__(self, model, c:float=1., noise_lvl:float=.25, policy_strategy:PolicyStrategy=PolicyStrategy.SAMPLE_POSTERIOR_POLICY) :
+        super().__init__(noise_lvl=noise_lvl, policy_strategy=policy_strategy)
+        self.model     = model
+        self.c         = c
 
     def create_root_node(self, game_board:GameBoard) -> Node_Base :
         """
         Create a Neural MCTS node.
         """
-        return Node_NeuralMCTS(game_board, params=[self.model, self.c], policy_strategy=self.policy_strategy)
+        return Node_NeuralMCTS(game_board, params=[self.model, self.c], noise_lvl=self.noise_lvl, policy_strategy=self.policy_strategy)
 
 
 
@@ -214,6 +215,6 @@ class Bot_VanillaMCTS(Bot_Base) :
         """
         Create a vanilla MCTS node.
         """
-        return Node_VanillaMCTS(game_board, label="ROOT", policy_strategy=self.policy_strategy)
+        return Node_VanillaMCTS(game_board, label="ROOT", noise_lvl=self.noise_lvl,, policy_strategy=self.policy_strategy)
     
         

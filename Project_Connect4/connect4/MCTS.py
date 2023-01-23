@@ -45,7 +45,7 @@ class PolicyStrategy(IntEnum) :
 class Node_Base(ABC) :
     
     def __init__(self, game_board:GameBoard, parent:Node=None, params:list=[], shallow_copy_board:bool=False, 
-                 action=-1, label=None, policy_strategy=PolicyStrategy.GREEDY_POSTERIOR_VALUE) :
+                 action=-1, label=None, noise_lvl:float=0.25, policy_strategy=PolicyStrategy.GREEDY_POSTERIOR_VALUE) :
         """
         Class Node_Base
         
@@ -75,6 +75,9 @@ class Node_Base(ABC) :
               
             > label, str, default=None
               label for the node, used when generating summary strings
+
+            > noise_lvl, float [0,1], default=0.25
+              fraction of noise to use when policy strategy is set to NOISY_POSTERIOR_POLICY
               
             > policy_strategy, PolicyStrategy, default=PolicyStrategy.GREEDY_POSTERIOR_VALUE
               strategy for choosing actions
@@ -91,6 +94,7 @@ class Node_Base(ABC) :
         self.params          = params
         self.action          = action
         self.label           = label
+        self.noise_lvl       = noise_lvl
         self.policy_strategy = policy_strategy
         
         
@@ -184,12 +188,12 @@ class Node_Base(ABC) :
         ##  Resolve policy strategy NOISY_POSTERIOR_POLICY
         if policy_strategy == PolicyStrategy.NOISY_POSTERIOR_POLICY :
             posterior = self.get_posterior_policy(temperature=temperature)
-            debug_lvl.message(DebugLevel.LOW, f"Adding noise to posterior policy {' '.join([f'{x:.2f}' for x in posterior])}")
+            debug_lvl.message(DebugLevel.LOW, f"Adding {100.*self.noise_lvl:.1f}% noise to posterior policy {' '.join([f'{x:.2f}' for x in posterior])}")
             noisy_idices = []
             for idx, p in enumerate(posterior) :
-            	if p > 1e-8 : noisy_idices.append(idx)
+                if p > 1e-8 : noisy_idices.append(idx)
             for idx, p in enumerate(posterior) :
-            	posterior[idx] = 0.75*p + 0.25/len(noisy_idices)
+                posterior[idx] = (1-self.noise_lvl)*p + self.noise_lvl/len(noisy_idices)
             debug_lvl.message(DebugLevel.LOW, f"Sampling action from noisy policy {' '.join([f'{x:.2f}' for x in posterior])}")
             return np.random.choice(len(posterior), p=posterior)
 
@@ -293,8 +297,8 @@ class Node_Base(ABC) :
             node_label = f"{self.game_board.to_play.name}:{action}"
             debug_lvl.message(DebugLevel.MEDIUM, f"Select unvisited action {node_label}")
             new_game_board.apply_action(action)
-            self.children[a_idx] = self.__class__(new_game_board, parent=self, params=self.params, 
-                                                  shallow_copy_board=True, action=action, label=node_label)
+            self.children[a_idx] = self.__class__(new_game_board, parent=self, params=self.params, shallow_copy_board=True, 
+                                                  action=action, label=node_label, noise_lvl=self.noise_lvl)
             return self.children[a_idx]
         
         ##  Otherwise best child is that with highest UCB score
@@ -440,7 +444,7 @@ class Node_Base(ABC) :
 class Node_NeuralMCTS(Node_Base) :
     
     def __init__(self, game_board:GameBoard, parent:Node_Base=None, params:list=[], shallow_copy_board:bool=False, 
-                 action=-1, label=None, policy_strategy=PolicyStrategy.SAMPLE_POSTERIOR_POLICY) :
+                 action:int=-1, label:str=None, noise_lvl:float=0.25, policy_strategy:PolicyStrategy=PolicyStrategy.GREEDY_POSTERIOR_VALUE) :
         """
         Class Node_NeuralMCTS
         
@@ -470,20 +474,23 @@ class Node_NeuralMCTS(Node_Base) :
               
             > label, str, default=None
               label for the node, used when generating summary strings
+
+            > noise_lvl, float [0,1], default=0.25
+              fraction of noise to use when policy strategy is set to NOISY_POSTERIOR_POLICY
               
             > policy_strategy, PolicyStrategy, default=PolicyStrategy.SAMPLE_POSTERIOR_POLICY
               strategy for choosing actions
         """
 
         ##  Call Node_Base initialiser with params=[model, c]
-        super().__init__(game_board, parent, params, shallow_copy_board, action, label, policy_strategy)
+        super().__init__(game_board, parent, params, shallow_copy_board, action, label, noise_lvl, policy_strategy)
         
         ##  Resolve the prior_prob for this node
         self.prior_prob = parent.child_priors[action] if parent else 0
         
         ##  Resolve the hyper-params
-        self.model   = params[0]
-        self.c       = params[1]
+        self.model = params[0]
+        self.c     = params[1]
         
         ##  Construct model input
         ##  -  if this node is player O, multiply model_input by -1, so it becomes "from current player's perspective"
@@ -586,7 +593,7 @@ class Node_NeuralMCTS(Node_Base) :
 class Node_VanillaMCTS(Node_Base) :
     
     def __init__(self, game_board:GameBoard, parent:Node_Base=None, params:list=[2.], shallow_copy_board:bool=False, 
-                 action=-1, label=None, policy_strategy=PolicyStrategy.GREEDY_POSTERIOR_VALUE) :
+                 action:int=-1, label:str=None, noise_lvl:float=0.25, policy_strategy:PolicyStrategy=PolicyStrategy.GREEDY_POSTERIOR_VALUE) :
         """
         Class Node_VanillaMCTS
         
@@ -616,13 +623,16 @@ class Node_VanillaMCTS(Node_Base) :
               
             > label, str, default=None
               label for the node, used when generating summary strings
+
+            > noise_lvl, float [0,1], default=0.25
+              fraction of noise to use when policy strategy is set to NOISY_POSTERIOR_POLICY
               
             > policy_strategy, PolicyStrategy, default=PolicyStrategy.GREEDY_POSTERIOR_VALUE
               strategy for choosing actions
         """
         
         ##  Call Node_Base initialiser with params=[UCB_c]
-        super().__init__(game_board, parent, params, shallow_copy_board, action, label, policy_strategy)
+        super().__init__(game_board, parent, params, shallow_copy_board, action, label, noise_lvl, policy_strategy)
         
         
     def get_expansion_score(self) -> float :
