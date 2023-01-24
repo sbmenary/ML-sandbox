@@ -215,6 +215,6 @@ class Bot_VanillaMCTS(Bot_Base) :
         """
         Create a vanilla MCTS node.
         """
-        return Node_VanillaMCTS(game_board, label="ROOT", noise_lvl=self.noise_lvl,, policy_strategy=self.policy_strategy)
+        return Node_VanillaMCTS(game_board, label="ROOT", noise_lvl=self.noise_lvl, policy_strategy=self.policy_strategy)
     
         
