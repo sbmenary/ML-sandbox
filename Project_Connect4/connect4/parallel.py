@@ -9,13 +9,17 @@ Definition of abstract objects for running data generation methods in parallel s
 from __future__ import annotations
 import sys, time
 
-from threading import Lock, Thread
+from threading import Lock as ThreadLock, Thread
 
-from multiprocess import Process, Queue
+from multiprocess import Lock as ProcessLock, Process, Queue
 
 
 ##  Global container of all custom threads created by this module
 all_threads = []
+
+##  Global locks 
+thread_lock  = ThreadLock()
+process_lock = ProcessLock()
         
 
 
@@ -34,7 +38,7 @@ class BaseThread(Thread) :
         """
         Thread.__init__(self)
         self.killed = False
-        self.lock   = Lock()
+        self.lock   = ThreadLock()
         global all_threads
         all_threads.append(self)
             
@@ -265,4 +269,39 @@ def kill_threads(threads:list=None, verbose:bool=False) -> None :
         if not hasattr(thread, "kill") :
             continue
         thread.kill(verbose=verbose)
+
+
+def global_info(message:str) :
+    """
+    Acquire thread and process locks (in that order) and print the message to sys.stdout.
+    """
+    global process_lock, thread_lock
+    thread_lock.acquire()
+    process_lock.acquire()
+    sys.stdout.write(f"{message}")
+    sys.stdout.flush()
+    process_lock.release()
+    thread_lock.release()
+
+
+def process_info(message:str) :
+    """
+    Acquire process lock and print message to sys.stdout.
+    """
+    global process_lock
+    process_lock.acquire()
+    sys.stdout.write(f"{message}")
+    sys.stdout.flush()
+    process_lock.release()
+
+
+def thread_info(message:str) :
+    """
+    Acquire thread lock and print message to sys.stdout.
+    """
+    global thread_lock
+    thread_lock.acquire()
+    sys.stdout.write(f"{message}")
+    sys.stdout.flush()
+    thread_lock.release()
 
