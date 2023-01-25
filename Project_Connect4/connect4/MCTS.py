@@ -189,13 +189,16 @@ class Node_Base(ABC) :
         if policy_strategy == PolicyStrategy.NOISY_POSTERIOR_POLICY :
             posterior = self.get_posterior_policy(temperature=temperature)
             debug_lvl.message(DebugLevel.LOW, f"Adding {100.*self.noise_lvl:.1f}% noise to posterior policy {' '.join([f'{x:.2f}' for x in posterior])}")
-            noisy_idices = []
-            for idx, p in enumerate(posterior) :
-                if p > 1e-8 : noisy_idices.append(idx)
-            for idx, p in enumerate(posterior) :
-                posterior[idx] = (1-self.noise_lvl)*p + self.noise_lvl/len(noisy_idices)
-            debug_lvl.message(DebugLevel.LOW, f"Sampling action from noisy policy {' '.join([f'{x:.2f}' for x in posterior])}")
-            return np.random.choice(len(posterior), p=posterior)
+            noisy_dist = []
+            for action in range(len(posterior)) :
+                if action in self.actions : 
+                    noisy_dist.append(1.)
+                else :
+                    noisy_dist.append(0.)
+            noisy_dist = np.array(noisy_dist) / np.sum(noisy_dist)
+            noisy_dist = (1-self.noise_lvl)*posterior + self.noise_lvl*noisy_dist
+            debug_lvl.message(DebugLevel.LOW, f"Sampling action from noisy policy {' '.join([f'{x:.2f}' for x in noisy_dist])}")
+            return np.random.choice(len(noisy_dist), p=noisy_dist)
 
         ##  If here then policy strategy not recognised!
         raise NotImplementedError(f"No policy implemented for strategy {policy_strategy.name}")

@@ -23,7 +23,7 @@ from connect4.bot   import Bot_NeuralMCTS, Bot_VanillaMCTS
 ###======================###
 
 def get_training_data_from_bot_game(model, duration:int=1, discount:float=1., num_random_moves:int=0, base_policy:PolicyStrategy=PolicyStrategy.NONE, 
-                                    debug_lvl:DebugLevel=DebugLevel.MUTE) -> tuple :
+                                    noise_lvl:float=0.25, debug_lvl:DebugLevel=DebugLevel.MUTE) -> tuple :
     """
     Generate training data by playing a bot game against itself.
 
@@ -41,6 +41,9 @@ def get_training_data_from_bot_game(model, duration:int=1, discount:float=1., nu
         >  base_policy, PolicyStrategy, default=NONE
            policy to apply to all moves after initial uniform random period, if NONE then fallback to class default
 
+        >  noise_lvl, float [0,1], default=0.25
+           fraction of noise to use when policy strategy is set to NOISY_POSTERIOR_POLICY
+
         >  debug_lvl, DebugLevel, default=MUTE
            level at which to print debug statements
 
@@ -55,7 +58,7 @@ def get_training_data_from_bot_game(model, duration:int=1, discount:float=1., nu
 
     ##  Create game and bot
     game_board = GameBoard()
-    bot        = Bot_NeuralMCTS(model) if model else Bot_VanillaMCTS()
+    bot        = Bot_NeuralMCTS(model, noise_lvl=noise_lvl) if model else Bot_VanillaMCTS(noise_lvl=noise_lvl)
     debug_lvl.message(DebugLevel.LOW, f"Using bot {bot}")
     debug_lvl.message(DebugLevel.LOW, game_board)
 
