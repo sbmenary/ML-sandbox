@@ -86,20 +86,20 @@ class Node_Base(ABC) :
             > policy_strategy, PolicyStrategy, default=PolicyStrategy.GREEDY_POSTERIOR_VALUE
               strategy for choosing actions
         """
-                
-        self.game_board      = game_board.deep_copy()
+        self.game_board      = game_board if shallow_copy_board else game_board.deep_copy()
         self.actions         = game_board.get_available_actions()
         self.player          = game_board.to_play
-        self.is_terminal     = True if len(self.actions) == 0 else False
+        self.is_terminal     = True if game_board.result else False
         self.children        = [None for a_idx in range(len(self.actions))]
         self.parent          = parent
+        self.action          = action
         self.total_score     = 0
         self.num_visits      = 0
         self.params          = params
-        self.action          = action
         self.label           = label
         self.noise_lvl       = noise_lvl
         self.policy_strategy = policy_strategy
+        logger.log(DebugLevel.VERY_HIGH, f"[Node_Base.__init__]  Created node with label='{label}', actions={self.actions}, is_terminal={self.is_terminal}, player={self.player.name}, parent={parent.label if parent else None}, action={action}, params={params}, noise_lvl={noise_lvl:.2f}, policy_strategy={policy_strategy.name}")
         
         
     def __str__(self) -> str :
@@ -135,64 +135,67 @@ class Node_Base(ABC) :
         raise NotImplementedError()
 
         
-    def choose_action(self, temperature:float=1., policy_strategy=PolicyStrategy.NONE, debug_lvl:DebugLevel=DebugLevel.MUTE) -> int :
+    def choose_action(self, temperature:float=1., policy_strategy=PolicyStrategy.NONE) -> int :
         """
         Choose an action according to the policy_strategy, falling back to stored value if NONE provided
         """
+        logger.log(DebugLevel.HIGH, f"[Node_Base.choose_action]  Choosing action with temperature={temperature:.2f}, policy_strategy={policy_strategy.name}")
 
         ##  Make sure a policy strategy is set
         if not policy_strategy :
             if not self.policy_strategy :
                 raise RuntimeError("No policy strategy set")
-                policy_strategy = self.policy_strategy
+            policy_strategy = self.policy_strategy
+            logger.log(DebugLevel.HIGH, f"[Node_Base.choose_action]  Setting policy_strategy to fallback value {policy_strategy.name}")
         
         ##  If this is a terminal node then no actions available
         if self.is_terminal : 
+            logger.log(DebugLevel.HIGH, "[Node_Base.choose_action]  Node is terminal, no action to be selected, returning None")
             return None
 
         ##  Resolve policy strategy UNIFORM_RANDOM
         if policy_strategy == PolicyStrategy.UNIFORM_RANDOM :
-            debug_lvl.message(DebugLevel.LOW, f"Selecting uniformly random action")
+            logger.log(DebugLevel.HIGH, f"[Node_Base.choose_action]  Selecting uniformly random action from {self.actions}")
             return np.random.choice(self.actions)
         
         ##  Resolve policy strategy GREEDY_PRIOR_VALUE
         if policy_strategy == PolicyStrategy.GREEDY_PRIOR_VALUE :
-            debug_lvl.message(DebugLevel.LOW, f"Selecting greedy action from prior values")
-            return self._select_action_greedy_prior_value(debug_lvl=debug_lvl)
+            logger.log(DebugLevel.HIGH, "[Node_Base.choose_action]  Selecting greedy action from prior values")
+            return self._select_action_greedy_prior_value()
         
         ##  Resolve policy strategy GREEDY_POSTERIOR_VALUE
         if policy_strategy == PolicyStrategy.GREEDY_POSTERIOR_VALUE :
-            debug_lvl.message(DebugLevel.LOW, f"Selecting greedy action from posterior values")
+            logger.log(DebugLevel.HIGH, "[Node_Base.choose_action]  Selecting greedy action from posterior values")
             child_scores = [c.get_action_value() if c else -np.inf for c in self.children]
             best_a_idx   = np.argmax(child_scores)
             return self.actions[best_a_idx]
         
         ##  Resolve policy strategy GREEDY_PRIOR_POLICY
         if policy_strategy == PolicyStrategy.GREEDY_PRIOR_POLICY :
-            debug_lvl.message(DebugLevel.LOW, f"Selecting greedy action from prior policy")
-            return self._select_action_greedy_prior_policy(debug_lvl=debug_lvl)
+            logger.log(DebugLevel.HIGH, "[Node_Base.choose_action]  Selecting greedy action from prior policy")
+            return self._select_action_greedy_prior_policy()
 
         ##  Resolve policy strategy GREEDY_POSTERIOR_POLICY
         if policy_strategy == PolicyStrategy.GREEDY_POSTERIOR_POLICY :
             posterior = self.get_posterior_policy(temperature=temperature)
-            debug_lvl.message(DebugLevel.LOW, f"Selecting greedy action from posterior policy {' '.join([f'{x:.2f}' for x in posterior])}")
+            logger.log(DebugLevel.HIGH, f"[Node_Base.choose_action]  Selecting greedy action from posterior policy {' '.join([f'{x:.2f}' for x in posterior])}")
             return np.argmax(posterior)
         
         ##  Resolve policy strategy SAMPLE_PRIOR_VALUE
         if policy_strategy == PolicyStrategy.SAMPLE_PRIOR_POLICY :
-            debug_lvl.message(DebugLevel.LOW, f"Sampling action from prior policy")
-            return self._select_action_sample_prior_policy(debug_lvl=debug_lvl)
+            logger.log(DebugLevel.HIGH, "[Node_Base.choose_action]  Sampling action from prior policy")
+            return self._select_action_sample_prior_policy()
 
         ##  Resolve policy strategy SAMPLE_POSTERIOR_POLICY
         if policy_strategy == PolicyStrategy.SAMPLE_POSTERIOR_POLICY :
             posterior = self.get_posterior_policy(temperature=temperature)
-            debug_lvl.message(DebugLevel.LOW, f"Sampling action from posterior policy {' '.join([f'{x:.2f}' for x in posterior])}")
+            logger.log(DebugLevel.HIGH, f"[Node_Base.choose_action]  Sampling action from posterior policy {' '.join([f'{x:.2f}' for x in posterior])}")
             return np.random.choice(len(posterior), p=posterior)
 
         ##  Resolve policy strategy NOISY_POSTERIOR_POLICY
         if policy_strategy == PolicyStrategy.NOISY_POSTERIOR_POLICY :
             posterior = self.get_posterior_policy(temperature=temperature)
-            debug_lvl.message(DebugLevel.LOW, f"Adding {100.*self.noise_lvl:.1f}% noise to posterior policy {' '.join([f'{x:.2f}' for x in posterior])}")
+            logger.log(DebugLevel.HIGH, f"Adding {100.*self.noise_lvl:.1f}% noise to posterior policy {' '.join([f'{x:.2f}' for x in posterior])}")
             noisy_dist = []
             for action in range(len(posterior)) :
                 if action in self.actions : 
@@ -201,10 +204,11 @@ class Node_Base(ABC) :
                     noisy_dist.append(0.)
             noisy_dist = np.array(noisy_dist) / np.sum(noisy_dist)
             noisy_dist = (1-self.noise_lvl)*posterior + self.noise_lvl*noisy_dist
-            debug_lvl.message(DebugLevel.LOW, f"Sampling action from noisy policy {' '.join([f'{x:.2f}' for x in noisy_dist])}")
+            logger.log(DebugLevel.HIGH, f"[Node_Base.choose_action]  Sampling action from noisy policy {' '.join([f'{x:.2f}' for x in noisy_dist])}")
             return np.random.choice(len(noisy_dist), p=noisy_dist)
 
         ##  If here then policy strategy not recognised!
+        logger.error(f"[Node_Base.choose_action]  No policy implemented for strategy {policy_strategy.name}")
         raise NotImplementedError(f"No policy implemented for strategy {policy_strategy.name}")
 
         
@@ -248,35 +252,38 @@ class Node_Base(ABC) :
             posterior.append(N**(1./temperature))
         posterior = np.array(posterior)
         posterior = posterior / posterior.sum()
+        if logger.isEnabledFor(DebugLevel.HIGHEST): 
+            logger.log(DebugLevel.HIGHEST, f"[Node_Base.get_posterior_policy]  Posterior {' '.join([f'{x:.2f}' for x in posterior])} constructed from actions {self.actions} with temperature {temperature:.2f}")
         return posterior
 
 
-    def multi_step_MCTS(self, num_steps:int, max_sim_steps:int=-1, discount:float=1., debug_lvl:DebugLevel=DebugLevel.MUTE) :
+    def multi_step_MCTS(self, num_steps:int, max_sim_steps:int=-1, discount:float=1.) -> None :
         """
         Perform many MCTS iterations using self as the root node.
         """
+        logger.log(DebugLevel.HIGH, f"[Node_Base.multi_step_MCTS]  Running {num_steps} MCTS iterations with max_sim_steps={max_sim_steps}, discount={discount:.2f}")
         for idx in range(num_steps) :
-            debug_lvl.message(DebugLevel.MEDIUM, f"Running MCTS step {idx}")
-            self.one_step_MCTS(max_sim_steps=max_sim_steps, discount=discount, debug_lvl=debug_lvl)
-            debug_lvl.message(DebugLevel.MEDIUM, f"")
+            self.one_step_MCTS(max_sim_steps=max_sim_steps, discount=discount)
 
 
-    def one_step_MCTS(self, max_sim_steps:int=-1, discount:float=1., debug_lvl:DebugLevel=DebugLevel.MUTE) :
+    def one_step_MCTS(self, max_sim_steps:int=-1, discount:float=1.) -> None :
         """
         Perform a single MCTS iteration using self as the root node.
         """
+        logger.log(DebugLevel.VERY_HIGH, "[Node_Base.one_step_MCTS]  Running MCTS iteration")
         
         ##  Select and expand from the root node
-        leaf_node = self.select_and_expand(recurse=True, debug_lvl=debug_lvl)
+        leaf_node = self.select_and_expand(recurse=True)
         
         ##  Simulate and backprop from the selected child
-        leaf_node.simulate_and_backprop(max_sim_steps=max_sim_steps, discount=discount, debug_lvl=debug_lvl)
+        leaf_node.simulate_and_backprop(max_sim_steps=max_sim_steps, discount=discount)
         
-        ##  Print updated tree if debug level is HIGH
-        debug_lvl.message(DebugLevel.HIGH, f"Updated tree is:\n{self.tree_summary()}")
+        ##  Print updated tree if debug level is HIGHEST
+        if logger.isEnabledFor(DebugLevel.HIGHEST): 
+            logger.log(DebugLevel.HIGHEST, f"Updated tree is:\n{self.tree_summary()}")
         
         
-    def select_and_expand(self, recurse:bool=False, debug_lvl:DebugLevel=DebugLevel.MUTE) -> Node :
+    def select_and_expand(self, recurse:bool=False) -> Node :
         """
         Select from node children according to tree traversal policy. If next state is None then create a 
         new child and return this.
@@ -285,14 +292,11 @@ class Node_Base(ABC) :
         
             > recurse, bool, default=False
               whether to recursively iterate through tree until a new leaf node is found.
-              
-            > debug_lvl, DebugLevel, default=MUTE
-              level at which to print debug statements to help understand algorithm behaviour.
         """
         
         ##  If leaf node then nothing to expand
         if self.is_terminal :
-            debug_lvl.message(DebugLevel.MEDIUM, f"Leaf node found")
+            logger.log(DebugLevel.VERY_HIGH, f"[Node_Base.select_and_expand]  Leaf node found")
             return self
                 
         ##  Uniformly randomly expand from un-visited children
@@ -302,7 +306,7 @@ class Node_Base(ABC) :
             action = self.actions[a_idx]
             new_game_board = self.game_board.deep_copy()
             node_label = f"{self.game_board.to_play.name}:{action}"
-            debug_lvl.message(DebugLevel.MEDIUM, f"Select unvisited action {node_label}")
+            logger.log(DebugLevel.VERY_HIGH, f"[Node_Base.select_and_expand]  Selecting unvisited action {node_label}")
             new_game_board.apply_action(action)
             self.children[a_idx] = self.__class__(new_game_board, parent=self, params=self.params, shallow_copy_board=True, 
                                                   action=action, label=node_label, noise_lvl=self.noise_lvl)
@@ -312,19 +316,19 @@ class Node_Base(ABC) :
         a_idx = np.argmax([c.get_expansion_score() for c in self.children])
         action = self.actions[a_idx]
         best_child = self.children[a_idx]
-        debug_lvl.message(DebugLevel.MEDIUM, f"Select known action {self.game_board.to_play.name}:{action}")
+        logger.log(DebugLevel.VERY_HIGH, f"[Node_Base.select_and_expand]  Select known action {self.game_board.to_play.name}:{action}")
         
         ##  If recurse then also select_and_expand from the child node
         if recurse :
-            debug_lvl.message(DebugLevel.MEDIUM, "... iterating to next level ...")
-            return best_child.select_and_expand(recurse=recurse, debug_lvl=debug_lvl)
+            logger.log(DebugLevel.VERY_HIGH, f"[Node_Base.select_and_expand]  ...iterating to next level...")
+            return best_child.select_and_expand(recurse=recurse)
         
         ##  Otherwise return selected child
         return best_child
         
     
     @abstractmethod
-    def simulate(self, max_sim_steps:int=-1, discount:float=1., debug_lvl:DebugLevel=DebugLevel.MUTE) -> float :
+    def simulate(self, max_sim_steps:int=-1, discount:float=1.) -> float :
         """
         Simulate a game starting from this node.
         
@@ -336,9 +340,6 @@ class Node_Base(ABC) :
             > discount, int, default=1.
               factor by which to multiply the reward each turn, causing a preference for short-term rewards if discount<1.
               
-            > debug_lvl, DebugLevel, default=MUTE
-              level at which to print debug statements to help understand algorithm behaviour.
-              
         Returns:
         
             > float
@@ -347,8 +348,7 @@ class Node_Base(ABC) :
         raise NotImplementedError()
     
     
-    def simulate_and_backprop(self, max_sim_steps:int=-1, discount:float=1.,
-                              debug_lvl:DebugLevel=DebugLevel.MUTE) -> float :
+    def simulate_and_backprop(self, max_sim_steps:int=-1, discount:float=1.) -> float :
         """
         Simulate a game starting from this node. Backpropagate the resulting score up the whole tree.
         Result is the score from player X's perspective.
@@ -357,31 +357,28 @@ class Node_Base(ABC) :
         
             > max_sim_steps, int, default=-1
               if positive then determines how many moves to play before declaring a drawn game
-              
-            > debug_lvl, DebugLevel, default=MUTE
-              level at which to print debug statements to help understand algorithm behaviour.
         """
         
         ##  Simulated game and obtain instance of GameResult
-        result = self.simulate(max_sim_steps=max_sim_steps, discount=discount, debug_lvl=debug_lvl)
+        result = self.simulate(max_sim_steps=max_sim_steps, discount=discount)
         
         ##  Update this node and backprop up the tree
-        self.update_and_backprop(result, discount=discount, debug_lvl=debug_lvl)
+        self.update_and_backprop(result, discount=discount)
             
             
-    def timed_MCTS(self, duration:int, max_sim_steps:int=-1, discount:float=1., debug_lvl:DebugLevel=DebugLevel.MUTE) -> int :
+    def timed_MCTS(self, duration:int, max_sim_steps:int=-1, discount:float=1.) -> int :
         """
         Perform MCTS iterations with self as the root node until duration (in seconds) has elapsed.
         After this time, MCTS will finish its current iteration, so total execution time is > duration.
         """
+        logger.log(DebugLevel.HIGH, f"[Node_Base.timed_MCTS]  Running MCTS steps for duration={duration:.2f} with max_sim_steps={max_sim_steps}, discount={discount:.2f}")
         
         ##  Keep calling self.one_step_MCTS until required duration has elapsed
         start_time   = time.time()
         current_time = start_time
         num_itr = 0
         while current_time - start_time < duration :
-            debug_lvl.message(DebugLevel.MEDIUM, f"Running MCTS step")
-            self.one_step_MCTS(max_sim_steps=max_sim_steps, discount=discount, debug_lvl=debug_lvl)
+            self.one_step_MCTS(max_sim_steps=max_sim_steps, discount=discount)
             current_time = time.time()
             num_itr += 1
         return num_itr
@@ -395,20 +392,18 @@ class Node_Base(ABC) :
         ##  Summarise this node
         ret = ("     "*indent_level +
                f"> [{indent_level}{f': {self.label}' if self.label else ''}] N={self.num_visits}, T={self.total_score:.3f}, " +
-               f"E={self.get_expansion_score():.3f}, Q={self.get_action_value():.3f}")
+               f"E={self.get_expansion_score():.3f}, Q={self.get_action_value():.3f}, {len(self.children)} children")
         
         ##  Recursively add the summary of each child node, iterating the indent level to reflect tree depth
         for a, c in zip(self.actions, self.children) :
-            if c :
-                ret += f"\n{c.tree_summary(indent_level+1)}"
-            else :
-                ret += "\n" + "     "*(indent_level+1) + "> None"
+            if not c : continue
+            ret += f"\n{c.tree_summary(indent_level+1)}"
                 
         ##  Return
         return ret
         
         
-    def update(self, result:float, debug_lvl:DebugLevel=DebugLevel.MUTE) -> None :
+    def update(self, result:float) -> None :
         """
         Update the score and visit counts for this node.
         """
@@ -421,26 +416,24 @@ class Node_Base(ABC) :
                 result = -result
         else :
             result = 0.
-        debug_lvl.message(DebugLevel.MEDIUM, 
-              f"Node {self.label} with parent={self.parent.player.name if self.parent else 'NONE'}, N={self.num_visits}, T={self.total_score:.2f} receiving score {result:.2f}")
+        logger.log(DebugLevel.VERY_HIGH, f"[Node_Base.update]  Node {self.label} with parent={self.parent.player.name if self.parent else 'NONE'}, N={self.num_visits}, T={self.total_score:.2f} receiving score {result:.2f}")
         
         ##  Update total score and number of visits for this node
         self.total_score += result
         self.num_visits  += 1
         
         
-    def update_and_backprop(self, result:float, discount:float=1., 
-                            debug_lvl:DebugLevel=DebugLevel.MUTE) -> None :
+    def update_and_backprop(self, result:float, discount:float=1.) -> None :
         """
         Update the score and visit counts for this node and backprop to all parents.
         """
         
         ##  Update this node
-        self.update(result, debug_lvl=debug_lvl)
+        self.update(result)
         
         ##  Recursively update all parent nodes
         if self.parent :
-            self.parent.update_and_backprop(discount*result, debug_lvl=debug_lvl)
+            self.parent.update_and_backprop(discount*result)
 
         
 
@@ -513,35 +506,37 @@ class Node_NeuralMCTS(Node_Base) :
         self.child_priors, self.prior_value = self.child_priors.numpy()[0], self.prior_value.numpy()[0,0]
         if self.player == BinaryPlayer.O : self.prior_value = -self.prior_value
 
+        ##  Log this node
+        logger.log(DebugLevel.VERY_HIGH, f"[Node_NeuralMCTS.__init__]  Created node with model={self.model.name}, c={self.c:.3f}, prior_prob={prior_prob:.3f}, prior_value={self.prior_value:.3f}, child_priors={' '.join([f'{x:.2f}' for x in self.child_priors])}")
 
-    def _select_action_greedy_prior_policy(self, debug_lvl:DebugLevel=DebugLevel.MUTE) -> int :
+
+    def _select_action_greedy_prior_policy(self) -> int :
         prior = self.get_prior_policy()
-        debug_lvl.message(DebugLevel.LOW, f"Prior policy is {' '.join([f'{x:.2f}' for x in prior])}")
+        logger.log(DebugLevel.HIGH, f"[Node_NeuralMCTS._select_action_greedy_prior_policy]  Prior policy is {' '.join([f'{x:.2f}' for x in prior])}")
         return np.argmax(prior)
 
 
-    def _select_action_greedy_prior_value(self, debug_lvl:DebugLevel=DebugLevel.MUTE) -> int :
+    def _select_action_greedy_prior_value(self) -> int :
         actions, values = [], []
         for a_idx, action in enumerate(self.actions) :
             child_node = self.children[a_idx]
             if not child_node :
                 new_game_board = self.game_board.deep_copy()
                 new_game_board.apply_action(action)
-                child_node = self.__class__(new_game_board, parent=self, params=self.params, 
-                                            shallow_copy_board=True, action=action)
+                child_node = self.__class__(new_game_board, parent=self, params=self.params, shallow_copy_board=True, action=action)
             v = child_node.prior_value
             actions.append(action)
             values .append(v)
         values = np.array(values)
         if self.player == BinaryPlayer.O :
             values = -values
-        debug_lvl.message(DebugLevel.LOW, f"Prior values are {' '.join([f'{x:.2f}' for x in prior])}")
+        logger.log(DebugLevel.HIGH, f"[Node_NeuralMCTS._select_action_greedy_prior_value]  Prior values are {' '.join([f'{x:.2f}' for x in prior])}")
         return actions[np.argmax(values)]
 
 
-    def _select_action_sample_prior_policy(self, debug_lvl:DebugLevel=DebugLevel.MUTE) -> int :
+    def _select_action_sample_prior_policy(self) -> int :
         prior = self.get_prior_policy()
-        debug_lvl.message(DebugLevel.LOW, f"Prior policy is {' '.join([f'{x:.2f}' for x in prior])}")
+        logger.log(DebugLevel.HIGH, f"[Node_NeuralMCTS._select_action_sample_prior_policy]  Prior policy is {' '.join([f'{x:.2f}' for x in prior])}")
         return np.random.choice(len(prior), p=prior)
         
         
@@ -576,7 +571,7 @@ class Node_NeuralMCTS(Node_Base) :
         return prior
     
     
-    def simulate(self, max_sim_steps:int=-1, discount:float=1., debug_lvl:DebugLevel=DebugLevel.MUTE) -> float :
+    def simulate(self, max_sim_steps:int=-1, discount:float=1.) -> float :
         """
         Return value of a game from player X's perspective
         """
@@ -584,11 +579,11 @@ class Node_NeuralMCTS(Node_Base) :
         ##  Check if game has already been won
         result = self.game_board.result
         if result :
-            debug_lvl.message(DebugLevel.MEDIUM, f"Leaf node found with result {result.name}")
+            logger.log(DebugLevel.VERY_HIGH, f"[Node_NeuralMCTS.simulate]  Leaf node found with result {result.name}")
             return result.get_game_score_for_player(BinaryPlayer.X)
                   
         ##  Otherwise return the NN value for this state, which is alway from player X's point of view
-        debug_lvl.message(DebugLevel.MEDIUM, f"Simulation using prior value {self.prior_value:.4f}")
+        logger.log(DebugLevel.VERY_HIGH, f"[Node_NeuralMCTS.simulate]  Simulation using prior value {self.prior_value:.4f}")
         return self.prior_value
 
 
@@ -665,7 +660,7 @@ class Node_VanillaMCTS(Node_Base) :
         return mean_score + UCB_c * np.sqrt(np.log(self.parent.num_visits) / self.num_visits)
         
     
-    def simulate(self, max_sim_steps:int=-1, discount:float=1., debug_lvl:DebugLevel=DebugLevel.MUTE) -> float :
+    def simulate(self, max_sim_steps:int=-1, discount:float=1.) -> float :
         """
         Simulate a game starting from this node.
         Assumes that both players act according to a uniform-random policy.
@@ -675,21 +670,18 @@ class Node_VanillaMCTS(Node_Base) :
             > max_sim_steps, int, default=-1
               if positive then determines how many moves to play before declaring a drawn game
               
-            > debug_lvl, DebugLevel, default=MUTE
-              level at which to print debug statements to help understand algorithm behaviour.
-              
         Returns:
         
             > float
               the score of the simulation, defined as +1 is X wins, -1 if O wins, 0 for a draw
         """
-        
+
         ##  Check if game has already been won
         ##  - if so then return score
         ##  - score is -1 if target player has lost, +1 if they've won, and 0 for a draw
         result = self.game_board.result
         if result :
-            debug_lvl.message(DebugLevel.MEDIUM, f"Leaf node found with result {result.name}")
+            logger.log(DebugLevel.VERY_HIGH, f"[Node_VanillaMCTS.simulate]  Leaf node found with result {result.name}")
             return result.get_game_score_for_player(BinaryPlayer.X)
                 
         ##  Create copy of game board to play simulation
@@ -710,8 +702,8 @@ class Node_VanillaMCTS(Node_Base) :
             result = simulated_game.result
                   
         ##  Debug trajectory
-        debug_lvl.message(DebugLevel.MEDIUM, f"Simulation ended with result {result.name} with compound_discount={compound_discount:.3f}")
-        debug_lvl.message(DebugLevel.MEDIUM, f"Simulated trajectory was: {' '.join(trajectory)}")
+        logger.log(DebugLevel.VERY_HIGH, f"[Node_VanillaMCTS.simulate]  Simulation ended with result {result.name} with compound_discount={compound_discount:.3f}")
+        logger.log(DebugLevel.VERY_HIGH, f"[Node_VanillaMCTS.simulate]  Simulated trajectory was: {' '.join(trajectory)}")
                                 
         ##  Return score
         return compound_discount*result.get_game_score_for_player(BinaryPlayer.X)

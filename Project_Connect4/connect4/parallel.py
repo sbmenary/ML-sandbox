@@ -239,10 +239,10 @@ def generate_from_processes(func, func_args:list=[], num_proc:int=1, num_results
 
     ##  Begin processes in parallel (monitor first)
     if use_monitor : monitor.start()
-    worker .start()
+    worker.start()
 
     ##  Wait for processes to complete (worker first)
-    worker .join()
+    worker.join()
     if use_monitor : monitor.join()
     
     ##  Return results from worker process
