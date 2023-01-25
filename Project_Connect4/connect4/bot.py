@@ -8,10 +8,15 @@ Definition of bots that use MCTS to play connect 4.
 
 from __future__ import annotations
 from abc  import ABC, abstractmethod
+import logging
 
 from connect4.utils import DebugLevel
 from connect4.game  import GameBoard
 from connect4.MCTS  import Node_Base, Node_NeuralMCTS, Node_VanillaMCTS, PolicyStrategy
+
+
+##  Global logger for this module
+logger = logging.getLogger(__name__)
 
 
 
@@ -88,9 +93,8 @@ class Bot_Base(ABC) :
         """
         
         ##  If game has ended then cannot generate a new action
-        game_result = game_board.get_result() 
-        if game_board and game_board.get_result() :
-            raise RuntimeError(f"Game is in terminal state {game_result}")
+        if game_board and game_board.result :
+            raise RuntimeError(f"Game is in terminal state {game_board.result}")
 
         ##  Create root_node from game_board provided
         ##  -  fall back to stored root_node if game_board is None

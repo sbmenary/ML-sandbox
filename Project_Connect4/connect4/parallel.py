@@ -7,11 +7,15 @@ Definition of abstract objects for running data generation methods in parallel s
 """
 
 from __future__ import annotations
-import sys, time
+import logging, sys, time
 
 from threading import Lock as ThreadLock, Thread
 
 from multiprocess import Lock as ProcessLock, Process, Queue
+
+
+##  Global logger for this module
+logger = logging.getLogger(__name__)
 
 
 ##  Global container of all custom threads created by this module

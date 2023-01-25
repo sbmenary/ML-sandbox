@@ -7,7 +7,7 @@ Definition of miscellaneous methods for sharing between mutiple program.
 """
 
 
-import pickle, sys, time
+import logging, pickle, sys, time
 
 import numpy as np
 
@@ -15,6 +15,10 @@ from connect4.utils import DebugLevel
 from connect4.game  import BinaryPlayer, GameBoard, GameResult
 from connect4.MCTS  import PolicyStrategy
 from connect4.bot   import Bot_NeuralMCTS, Bot_VanillaMCTS
+
+
+##  Global logger for this module
+logger = logging.getLogger(__name__)
 
 
 
@@ -69,7 +73,7 @@ def get_training_data_from_bot_game(model, duration:int=1, discount:float=1., nu
     ##  -  values equal to +1 if the move is player X and -1 for player O
     ##  -  we do not invert sign of model_input because this already done by root_node
     ##  -  for first num_random_moves moves, use a uniform random play strategy
-    num_moves, result, policy_strategy = 0, game_board.get_result(), PolicyStrategy.UNIFORM_RANDOM
+    num_moves, result, policy_strategy = 0, game_board.result, PolicyStrategy.UNIFORM_RANDOM
     while not result :
         if num_moves >= num_random_moves : policy_strategy = base_policy
         bot.take_move(game_board, duration=duration, discount=discount, policy_strategy=policy_strategy, debug_lvl=debug_lvl)
@@ -82,7 +86,7 @@ def get_training_data_from_bot_game(model, duration:int=1, discount:float=1., nu
         model_inputs.append(model_input)
         posteriors  .append(bot.root_node.get_posterior_policy())
         values      .append(bot.root_node.player.value)
-        result = game_board.get_result()
+        result = game_board.result
         num_moves += 1
         
     ##  Backpropagate the value of the game result to all preceeding moves
@@ -144,11 +148,11 @@ def play_bot_game(model1, model2, duration:int=1, discount:float=1., bot1_policy
         ret = {"model1":BinaryPlayer.O, "model2":BinaryPlayer.X}
 
     ##  Take moves until end of game
-    result = game_board.get_result()
+    result = game_board.result
     while not result :
         bot = bot1 if game_board.to_play == BinaryPlayer.X else bot2
         bot.take_move(game_board, duration=duration, discount=discount, debug_lvl=debug_lvl)
-        result = game_board.get_result()
+        result = game_board.result
         
     ##  Add result to dictionary containing the player order, and return
     ret["result"] = result

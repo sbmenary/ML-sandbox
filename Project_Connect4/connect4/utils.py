@@ -8,6 +8,11 @@ Various utils to make life easier.
 
 from __future__ import annotations
 from enum       import IntEnum
+import logging
+
+
+##  Global logger for this module
+logger = logging.getLogger(__name__)
 
 
 

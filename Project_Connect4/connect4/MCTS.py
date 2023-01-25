@@ -9,12 +9,16 @@ Definition of nodes and methods for Monte Carlo Tree Search.
 from __future__ import annotations
 from enum       import IntEnum
 from abc        import ABC, abstractmethod
-import time
+import logging, time
 
 import numpy as np
 
 from connect4.utils import DebugLevel
 from connect4.game  import BinaryPlayer, GameBoard, GameResult
+
+
+##  Global logger for this module
+logger = logging.getLogger(__name__)
 
 
 
@@ -578,7 +582,7 @@ class Node_NeuralMCTS(Node_Base) :
         """
     
         ##  Check if game has already been won
-        result = self.game_board.get_result()
+        result = self.game_board.result
         if result :
             debug_lvl.message(DebugLevel.MEDIUM, f"Leaf node found with result {result.name}")
             return result.get_game_score_for_player(BinaryPlayer.X)
@@ -683,7 +687,7 @@ class Node_VanillaMCTS(Node_Base) :
         ##  Check if game has already been won
         ##  - if so then return score
         ##  - score is -1 if target player has lost, +1 if they've won, and 0 for a draw
-        result = self.game_board.get_result()
+        result = self.game_board.result
         if result :
             debug_lvl.message(DebugLevel.MEDIUM, f"Leaf node found with result {result.name}")
             return result.get_game_score_for_player(BinaryPlayer.X)
@@ -695,17 +699,15 @@ class Node_VanillaMCTS(Node_Base) :
         ##  1. game is won by a player
         ##  2. no further moves are possible, game is considered a draw
         ##  3. maximum move limit is reached, game is considered a draw
-        turn_idx, is_terminal, compound_discount, result = 0, False, 1., GameResult.NONE
+        turn_idx, compound_discount, result = 0, 1., GameResult.NONE
         trajectory = []
-        while not is_terminal :
+        while not result :
             turn_idx += 1
             compound_discount *= discount
             action = np.random.choice(simulated_game.get_unfilled_columns())
             trajectory.append(f"{simulated_game.to_play.name}:{action}")
             simulated_game.apply_action(action)
-            result = simulated_game.get_result()
-            if result :
-                is_terminal = True
+            result = simulated_game.result
                   
         ##  Debug trajectory
         debug_lvl.message(DebugLevel.MEDIUM, f"Simulation ended with result {result.name} with compound_discount={compound_discount:.3f}")

@@ -9,10 +9,15 @@ Definition of environment for playing a game of Connect 4.
 from __future__ import annotations
 from enum       import IntEnum
 from colorama   import Fore, Back, Style
+import logging
 
 import numpy as np
 
 from connect4.utils import DebugLevel
+
+
+##  Global logger for this module
+logger = logging.getLogger(__name__)
 
 
 
@@ -107,6 +112,7 @@ class GameBoard :
                              fill_value = BinaryPlayer.NONE.value, 
                              dtype      = np.int8)
         self.to_play         = BinaryPlayer.X
+        self.result          = GameResult.NONE
         self.applied_actions = []
         
     
@@ -122,6 +128,9 @@ class GameBoard :
         
         ##  Check it's the same player's turn in both games
         if self.to_play != other.to_play : return False
+        
+        ##  Check game results are identical
+        if self.result != other.result : return False
         
         ##  Check game boards are identical
         if (self.board != other.board).any() : return False
@@ -150,7 +159,7 @@ class GameBoard :
         ret += "\n+-" +    '-+-'.join(["-" for p in range(self.horizontal_size)]) + "-+"
         ret += "\n| " +     '| '.join([f"{p}".ljust(2) for p in range(self.horizontal_size)]) + "|"
         ret += "\n+-" +    '-+-'.join(["-" for p in range(self.horizontal_size)]) + "-+"
-        ret += f"\nGame result is: {self.get_result().name}"
+        ret += f"\nGame result is: {self.result.name}"
         ##  Return complete multi-line str
         return ret
     
@@ -166,7 +175,7 @@ class GameBoard :
             raise TypeError(f"column_idx of type {type(column_idx)} where int expected")
             
         ##  Check that game has not already finished
-        if self.get_result() :
+        if self.result :
             raise RuntimeError("Cannot play new moves because the game is a terminal state")
             
         ##  Get column from internal numpy array
@@ -183,6 +192,9 @@ class GameBoard :
         
         ##  Update whose turn it is to play
         self.to_play = BinaryPlayer.invert(self.to_play)
+
+        ##  Update game result
+        self.result = self.get_result()
         
         
     def deep_copy(self) -> GameBoard :
@@ -195,6 +207,7 @@ class GameBoard :
         new_gameboard                 = GameBoard(self.horizontal_size, self.vertical_size, self.target_length)
         new_gameboard.board           = self.board.copy()
         new_gameboard.to_play         = self.to_play
+        new_gameboard.result          = self.result
         new_gameboard.applied_actions = self.applied_actions.copy()
         return new_gameboard
         
@@ -214,7 +227,7 @@ class GameBoard :
         """
         
         ##  Check whether game has ended
-        if self.get_result() :
+        if self.result :
             return []
         
         ##  Otherwise return list of all unfilled column indices
@@ -300,6 +313,9 @@ class GameBoard :
         
         ##  Return the specific index to its 0 state, indicating that no piece is present
         self.board[column, row] = 0
+        
+        ##  Update game result (must be NONE unless something has gone wrong!)
+        self.result = GameResult.NONE
     
 
 

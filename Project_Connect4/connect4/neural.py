@@ -6,6 +6,8 @@
 Definition of neural networks.
 """
 
+import logging
+
 import numpy as np
 import tensorflow as tf
 
@@ -13,6 +15,10 @@ from tensorflow.keras.layers     import Add, BatchNormalization, Concatenate, Co
 from tensorflow.keras.losses     import Loss, MeanSquaredError, CategoricalCrossentropy
 from tensorflow.keras.models     import Model
 from tensorflow.keras.optimizers import Adam
+
+
+##  Global logger for this module
+logger = logging.getLogger(__name__)
 
 
 
