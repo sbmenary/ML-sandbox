@@ -1,10 +1,10 @@
 ###
 ###  mathsformer.tf_objects.py
 ###  author: S. Menary [sbmenary@gmail.com]
-###  FeedForward and SelfAttention layers modified from tf keras tutorial: https://www.tensorflow.org/text/tutorials/transformer
+###  FeedForward and Transformer-type layers modified from tf keras tutorial: https://www.tensorflow.org/text/tutorials/transformer
 ###
 """
-Definition of custom keras layers and loss functions.
+Definition of custom keras objects.
 """
 
 from __future__ import annotations
