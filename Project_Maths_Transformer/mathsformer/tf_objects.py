@@ -9,7 +9,7 @@ Definition of custom keras objects.
 
 from __future__ import annotations
 
-import math
+import logging, math
 
 import numpy      as np
 import tensorflow as tf
@@ -32,7 +32,7 @@ pi, two_pi = math.pi, 2*math.pi
 ##   Methods   ##
 ##=============##
 
-def create_custom_objects_dict(*layers) :
+def create_custom_objects_dict(*layers, model:Model=None) :
     """
     Parse a list of custom keras layers and create a dictionary of "LayerName":LayerName for all custom keras objects in the inheritance tree.
     This is needed when loading a model with custom keras layers from file.
@@ -41,9 +41,20 @@ def create_custom_objects_dict(*layers) :
 
         >  layers, list
            A list of the required custom layer classes, e.g. [PositionalEncoding, EncoderBlock,...]
+
+        >  model, Model, default=None
+           Optionally, use keyword argument to provide a model whose layers will be queried to see whether they are instances of CustomObject
     """
+    ##  If model was provided then add its layers to the list
+    if type(model) != type(None) : layers += tuple([l.__class__ for l in model.layers])
+
+    ##  Create list of sets of custom objects found in layers
     list_of_sets  = [l.get_custom_objects() if hasattr(l,"get_custom_objects") else {} for l in layers]
+
+    ##  Combine into a single set
     union_of_sets = set().union(*list_of_sets)
+
+    ##  Return custom objects a dictionary of __name__:__class__
     return {l.__name__:l for l in union_of_sets}
 
 
@@ -167,8 +178,8 @@ class AttentionBlock(CustomLayer) :
         base_name = self.name
         if _mha : self._mha = _mha
         else    : self._mha = MultiHeadAttention(name=f"{base_name}_mha", num_heads=self.num_heads, key_dim=self.ndim_hidden, value_dim=self.ndim_out, dropout=self.dropout, dtype=self.dtype)
-        self._layernorm = LayerNormalization(name=f"{base_name}_layer_norm")
-        self._average   = Average(name=f"{base_name}_average")
+        self._average   = Average           (name=f"{base_name}_average"   , dtype=self.dtype) if self.skip_connect else None
+        self._layernorm = LayerNormalization(name=f"{base_name}_layer_norm", dtype=self.dtype) if self.layer_norm   else None
         
 
     def call(self, x, training=None, mask=None) :
@@ -190,8 +201,8 @@ class AttentionBlock(CustomLayer) :
 
         ##  Execute attention, skip-connection and layer-normalisation
         y = self._mha(query=q, value=v, use_causal_mask=self.use_causal_mask, training=training)
-        y = self._average([x, y])
-        y = self._layernorm(y, training=training)
+        if skip_connect : y = self._average([x, y])
+        if layer_norm   : y = self._layernorm(y, training=training)
         return y
 
 
@@ -481,6 +492,8 @@ class FeedForwardBlock(CustomLayer) :
                 "dropout"           : self.dropout, 
                 "activation"        : self.activation, 
                 "skip_connect"      : self.skip_connect,
+                "layer_norm"        : self.layer_norm,
+                "batch_norm"        : self.batch_norm,
             })
         return config
 
@@ -514,7 +527,6 @@ class LayerActivationRecord(Callback) :
         
         Tracks the mean & std dev of the activations from all layers in model.layers during training
         Uses val_input as model input
-        If corresponding val_output provided then also calculate the loss
         
         Note that it is not easy to access the activations of sublayers. This is because we want to access the
         activations through layer.output, which generally exists as part of the computational graph. However,
@@ -529,9 +541,6 @@ class LayerActivationRecord(Callback) :
                
             >  val_input, Tensor
                Model input from which layer activations will be derived
-               
-            >  val_output, Tensor, default=None
-               Corresponding labels from which loss will be calculated
         """
         
         ##  Base class constructor
@@ -540,15 +549,14 @@ class LayerActivationRecord(Callback) :
         ##  Store arguments
         self.batch_frequency = batch_frequency
         self.val_input       = val_input
-        self.val_output      = val_output
-        self.do_loss         = type(val_output) != type(None)
         
         ##  Initialise containers and variables
-        self.batch_indices   = []
-        self.val_loss        = []
-        self.layer_means     = {}
-        self.layer_stds      = {}
-        self.batch_offset    = 0
+        self.batch_indices = []
+        self.layer_means   = {}
+        self.layer_stds    = {}
+        self.batch_offset  = -1
+        self.num_steps     = -1
+        self.layers        = []
 
     
     @classmethod
@@ -560,24 +568,19 @@ class LayerActivationRecord(Callback) :
         ##  Deserialise the val_input tensor
         config['val_input'] = tf.io.serialize_tensor(config['val_input'])
 
-        ##  Deserialise the val_output tensor
-        if type(config['val_output']) != type(None) :
-            config['val_output'] = tf.io.serialize_tensor(config['val_output'])
-
         ##  Load from config
         return super().from_config(config)
     
 
     def get_config(self) :
         """
-        Create config dict storing all values needed for __init__ to create a LayerWeightsRecord layer with the same configuration.
+        Create config dict storing all values needed for __init__ to create a LayerActivationRecord layer with the same configuration.
         """
         config = super().get_config()
         config.update(
             {
                 "batch_frequency" : self.batch_frequency, 
                 "val_input"       : tf.io.serialize_tensor(self.val_input), 
-                "val_output"      : None if type(self.val_output) is type(None) else tf.io.serialize_tensor(self.val_output), 
             })
         return config
         
@@ -587,7 +590,6 @@ class LayerActivationRecord(Callback) :
         Processing to be run at the end of each batch.
         With the given batch frequency, we pass self.val_input through the model and measure the layer activations.
         We record the mean and std for each layer.
-        If val_output was provided on construction, we also calculate and store the loss over this dataset.
         
         Inputs:
         
@@ -612,17 +614,6 @@ class LayerActivationRecord(Callback) :
         for layer, layer_out in zip(self.layers, layer_outs) :
             self.layer_means[layer.name].append(np.mean(layer_out))
             self.layer_stds [layer.name].append(np.std (layer_out))
-            
-        ##  If not configured to calculate loss then return
-        if not self.do_loss : return
-        
-        ##  Calculate + store the loss
-        self.val_loss.append(
-            self.model.compute_loss(
-                y_pred = self.model(self.val_input), 
-                y      = self.val_output
-            ).numpy()
-        )
     
     
     def on_epoch_begin(self, epoch_idx:int, logs=None) :
@@ -652,7 +643,6 @@ class LayerActivationRecord(Callback) :
         
         ##  Initialise containers
         self.batch_indices = []
-        self.val_loss      = []
         self.layers        = [l for l in self.model.layers if "tf.__operators__" not in l.name]
         for layer in self.layers :
             self.layer_means[layer.name] = []
@@ -790,7 +780,7 @@ class LearnableMixture(CustomLayer) :
         super().__init__(**kwargs)
 
         ##  Store all arguments provided to __init__, as these will be needed to implement model saving through the get_config() method
-        self._add = Add(name=f"{self.name}_add")
+        self._add = Add(name=f"{self.name}_add", dtype=self.dtype)
 
 
     def build(self, x:tuple) :
@@ -823,6 +813,195 @@ class LearnableMixture(CustomLayer) :
         Propagate a keras mask through the layer. Mask is a Tensor of bools with either the same shape as x, or one fewer indices.
         """
         return mask
+
+
+
+##===================================##
+##   LoggerCallback keras callback   ##
+##===================================##
+##
+class LoggerCallback(Callback) :
+    
+    def __init__(self, logger, loglvl:int=logging.INFO) :
+        """
+        class LoggerCallback
+        
+        At the end of each epoch, passes the log dictionary on the the logger object.
+        
+        Inputs:
+            
+            >  logger, logging.Logger
+               Logger object to call
+               
+            >  loglvl, int, default=logging.INFO
+               Log-level for the log calls at the end of each epoch
+        """
+        
+        ##  Base class constructor
+        super().__init__()
+        
+        ##  Store arguments
+        self.logger = logger
+        self.loglvl = loglvl
+    
+    
+    def on_epoch_end(self, epoch_idx:int, logs={}) :
+        """
+        Processing to be run at the end of each epoch.
+        Prints contents of log dictionary to logger.
+        
+        Inputs:
+        
+            >  epoch_idx, int
+               Index of the epoch about to be processed
+        """
+        self.logger.log(self.loglvl, f"Training reached the end of epoch at index {epoch_idx}")
+        for log_name, log_val in logs.items() :
+            self.logger.log(self.loglvl, f"    with metric {log_name}: {log_val}")
+
+
+
+##===============================##
+##   LossRecord keras callback   ##
+##===============================##
+##
+class LossRecord(Callback) :
+    
+    def __init__(self, batch_frequency:int, val_input, val_output, num_bootstrap:int=-1) :
+        """
+        class LossRecord
+        
+        Tracks the loss over a validation dataset during training
+        
+        Inputs:
+            
+            >  batch_frequency, int
+               Batch frequency with which to measure layer activations
+               
+            >  val_input, Tensor
+               Validation datapoints
+               
+            >  val_output, Tensor
+               True datapoint labels
+
+            >  num_bootstrap, int, default=-1
+               If >0 then we use this many bootstraps to estimate the uncertainty on the loss
+        """
+        
+        ##  Base class constructor
+        super().__init__()
+        
+        ##  Store arguments
+        self.batch_frequency = batch_frequency
+        self.val_input       = val_input
+        self.val_output      = val_output
+        self.num_bootstrap   = num_bootstrap
+        
+        ##  Initialise containers and variables
+        self.batch_indices = []
+        self.val_loss      = []
+        self.val_loss_std  = []
+        self.batch_offset  = 0
+
+        ##  Initialise the bootstrap weights
+        self.bootstrap_weights = None
+        if num_bootstrap > 0 :
+            self.bootstrap_weights = tf.random.poisson((num_bootstrap, len(val_output)), 1)
+
+    
+    @classmethod
+    def from_config(cls, config) :
+        """
+        Create a new LossRecord layer from a dictionary generated by the get_config() method.
+        """
+
+        ##  Deserialise the val_input and val_output tensors
+        config['val_input' ] = tf.io.serialize_tensor(config['val_input' ])
+        config['val_output'] = tf.io.serialize_tensor(config['val_output'])
+
+        ##  Load from config
+        return super().from_config(config)
+    
+
+    def get_config(self) :
+        """
+        Create config dict storing all values needed for __init__ to create a LossRecord layer with the same configuration.
+        """
+        config = super().get_config()
+        config.update(
+            {
+                "batch_frequency" : self.batch_frequency,
+                "val_input"       : tf.io.serialize_tensor(self.val_input), 
+                "val_output"      : tf.io.serialize_tensor(self.val_output), 
+                "num_bootstrap"   : self.num_bootstrap,
+            })
+        return config
+        
+        
+    def on_batch_end(self, batch_idx:int, logs=None) :
+        """
+        Processing to be run at the end of each batch.
+        With the given batch frequency, we pass self.val_input through the model and measure the loss.
+        
+        Inputs:
+        
+            >  batch_idx, int
+               Index of the batch having just been processed
+        """
+        
+        ##  Only proceed with the given batch frequency
+        if (batch_idx != 0) and ((batch_idx+1) % self.batch_frequency != 0) : return
+        
+        ##  Store the batch index, using self.batch_offset to ensure continuation over epochs
+        self.batch_indices.append(self.batch_offset + batch_idx)
+        
+        ##  Calculate + store the loss
+        y, y_pred = self.val_output, self.model(self.val_input, training=False)
+        self.val_loss.append(self.model.compute_loss(y=y, y_pred=y_pred).numpy())
+
+        ##  If not bootstrapping then end here
+        if self.num_bootstrap < 1 : return
+
+        ##  Do bootstraps
+        bs_losses = []
+        for sample_weight in self.bootstrap_weights :
+            loss = self.model.compute_loss(y=y, y_pred=y_pred, sample_weight=sample_weight).numpy()
+            loss *= len(sample_weight) / sample_weight.numpy().sum()
+            bs_losses.append(loss)
+
+        ##  Store std dev
+        self.val_loss_std.append(np.std(bs_losses))
+    
+    
+    def on_epoch_begin(self, epoch_idx:int, logs=None) :
+        """
+        Processing to be run at the start of each epoch.
+        Sets self.batch_offset equal to the number of batches already processed.
+        
+        Inputs:
+        
+            >  epoch_idx, int
+               Index of the epoch about to be processed
+        """
+        
+        ##  Set self.batch_offset to the number of batches already processed
+        self.batch_offset = epoch_idx * self.num_steps
+    
+    
+    def on_train_begin(self, logs=None) :
+        """
+        Processing to be run at the start of training.
+        
+        Re-initialises internal variables and storage containers.
+        """
+        ##  Initialise variables
+        self.num_steps    = self.params["steps"]
+        self.batch_offset = 0 
+        
+        ##  Initialise containers
+        self.batch_indices = []
+        self.val_loss      = []
+        self.val_loss_std  = []
 
 
 
@@ -1157,11 +1336,11 @@ class RightSlice(CustomLayer) :
 ##
 class Scaling(CustomLayer) :
     
-    def __init__(self, scale:float=1., **kwargs) :
+    def __init__(self, scale:float=1., trainable:bool=True, **kwargs) :
         '''
         class Scaling
 
-        A keras layer for scaling a tensor by a learnable parameter
+        A keras layer for scaling a tensor by a trainable parameter
 
         Inputs:
 
@@ -1179,6 +1358,7 @@ class Scaling(CustomLayer) :
                     f"{self.name}_scale", 
                     initializer = tf.keras.initializers.Constant(value=scale),
                     trainable   = True,
+                    dtype       = self.dtype,
                 )
     
 
