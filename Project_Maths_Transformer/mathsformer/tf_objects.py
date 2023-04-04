@@ -201,8 +201,8 @@ class AttentionBlock(CustomLayer) :
 
         ##  Execute attention, skip-connection and layer-normalisation
         y = self._mha(query=q, value=v, use_causal_mask=self.use_causal_mask, training=training)
-        if skip_connect : y = self._average([x, y])
-        if layer_norm   : y = self._layernorm(y, training=training)
+        if self.skip_connect : y = self._average([x, y])
+        if self.layer_norm   : y = self._layernorm(y, training=training)
         return y
 
 
