@@ -6,7 +6,11 @@
 Definition of utility methods.
 """
 
-import datetime, os, sys
+import __main__
+import datetime, logging, os, random, sys, time
+
+import numpy      as np
+import tensorflow as tf
 
 
 
@@ -133,6 +137,164 @@ def fancy_message(message:str) :
     middle_str_length = len(middle_str)
     enclosing_str     = "="*middle_str_length
     return f"{enclosing_str}\n{middle_str}\n{enclosing_str}"
+
+
+
+def initialise_logging(iostream=sys.stdout, fname:str=None, log_lvl_iostream:int=logging.INFO, log_lvl_fstream:int=logging.DEBUG) :
+    """
+    Create new logger object without output streams to stdout and to file.
+    
+    Inputs:
+    
+        >  iostream, streamable object, default=sys.stdout
+           Output stream, if None then do not create an iostream
+    
+        >  fname, str, default=None
+           Name of log file, if None then do not create a filestream
+    
+        >  log_lvl_iostream, int, default=logging.INFO
+           Log-level for output stream to stdout
+    
+        >  log_lvl_fstream, int, default=logging.DEBUG
+           Log-level for output stream to file
+           
+    Returns:
+    
+        >  logger, Logger: global logger with our output streams
+    """
+    
+    ##  Get root logger
+    logger = logging.getLogger()
+    
+    ##  Create stream to output log messages, default is sys.stdout
+    if type(iostream) != type(None) :
+        io_handler = logging.StreamHandler(sys.stdout)
+        io_handler.setFormatter(logging.Formatter("%(levelname)7s  %(message)s"))
+        io_handler.setLevel(log_lvl_iostream)
+        logger.addHandler(io_handler)
+
+    ##  Create stream to output log messages to file
+    if fname :
+        f_handler = logging.FileHandler(fname)
+        f_handler.setFormatter(logging.Formatter("%(levelname)7s  %(message)s"))
+        f_handler.setLevel(log_lvl_fstream)
+        logger.addHandler(f_handler)
+
+    ##  Set root logger level
+    handler_lvls = [h.level for h in logger.handlers]
+    if len(handler_lvls) > 0 :
+        logger.setLevel(min(handler_lvls))
+    
+    ##  Log start time 
+    logger.info(f"Begin logging on {datetime.datetime.today().strftime('%Y-%m-%d')} at {datetime.datetime.today().strftime('%H:%M:%S')}")
+    
+    ##  Return global logger
+    return logger
+
+
+
+def initialise_program(program_description:str, working_dir:str, global_config:dict, log_lvl_iostream:int=logging.INFO, log_lvl_fstream:int=logging.DEBUG) :
+    """
+    Groups many repeated program initialisation routines together. Steps are:
+    1. Create a new working directory at working_dir, using global_config to resolve any name tags
+    2. Create a new logger object without one output stream to stdout, and another to a file in working_dir
+    3. Log versions of all compatible modules stored in sys.modules
+    4. Log config values stored in global_config
+    5. Initialise random seeds of python random, numpy and tensorflow for reproducibility
+    
+    Inputs:
+
+    	>  program_description, str
+    	   Description of the program being run
+    
+        >  working_dir, str
+           Name of working directory to create
+    
+        >  global_config, dict
+           Dictionary of config values
+    
+        >  log_lvl_iostream, int, default=logging.INFO
+           Log-level for output stream to stdout
+    
+        >  log_lvl_fstream, int, default=logging.DEBUG
+           Log-level for output stream to file
+           
+    Returns:
+    
+        >  working_dir, str   : name of the working directory we created
+        >  logger     , Logger: global logger with our output streams
+        >  base_seed  , int   : set base python seed
+        >  np_seed    , int   : set numpy seed
+        >  tf_seed    , int   : set tensorflow seed
+    """
+    
+    ##  Create working directory
+    working_dir = create_working_directory(working_dir, tags=global_config)
+    print(fancy_message(f"Working directory created at {working_dir}"))
+    
+    ##  Start logging to stdout and to a file stream in working directory
+    logger = initialise_logging(fname=f"{working_dir}/log.txt", log_lvl_iostream=log_lvl_iostream, log_lvl_fstream=log_lvl_fstream)
+
+    ##  Log program being run
+    if hasattr(__main__, "__file__") : logger.info(f"Running program: {__main__.__file__}")
+    logger.info(f"Program description: {program_description}")
+    logger.info(f"Working directory: {working_dir}")
+    
+    ##  Log package versions for reproducibility
+    log_versions(logger, pull_from_sys=True, pull_submodules=True)
+    
+    ##  Log config values
+    for config_str in summarise_dict(global_config) :
+        logger.info(f"Registered global config value {config_str}")
+        
+    ##  Initialise random seeds for reproducibility
+    base_seed = global_config.get("base_seed", -1)
+    base_seed, np_seed, tf_seed = initialise_random_seeds(base_seed) 
+    logger.info(f"Python random seed set: {base_seed}")
+    logger.info(f"Numpy random seed set: {np_seed}")
+    logger.info(f"TensorFlow random seed set: {tf_seed}")
+    
+    ##  Return the things we created!
+    return working_dir, logger, base_seed, np_seed, tf_seed
+        
+        
+
+def initialise_random_seeds(base_seed:int=-1) :
+    """
+    Set the random seeds for base python, numpy and tensorflow.
+    In principle this should be enough to create reproducible results, assuming equal environments.
+    If base_seed < 1 then we use the current system time as the base seed
+    To avoid any nasty overlap, we define np_seed = base_seed + 1 and tf_seed = base_seed + 2
+    
+    Inputs:
+    
+        >  base_seed, int, default=-1
+           Seed to use for base python, if < 1 then default to system time
+           
+    Returns:
+    
+        >  base_seed, int: set base python seed
+        >  np_seed  , int: set numpy seed
+        >  tf_seed  , int: set tensorflow seed
+    """
+
+    ##  If base_seed <= 0 then replace with current system time
+    if base_seed < 1 :
+        base_seed = int(time.time())
+
+    ##  Set seed for python stdlib random
+    random.seed(base_seed)
+
+    ##  Set seed for numpy random
+    np_seed = base_seed + 1
+    np.random.seed(np_seed)
+
+    ##  Set seed for tf random
+    tf_seed = base_seed + 2
+    tf.random.set_seed(tf_seed)
+    
+    ##  Return seeds
+    return base_seed, np_seed, tf_seed
 
 
 

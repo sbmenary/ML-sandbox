@@ -16,15 +16,26 @@ import tensorflow as tf
 
 from collections import ChainMap
 
+from matplotlib import pyplot as plt
+
 from tensorflow.keras.callbacks import Callback
 from tensorflow.keras.layers    import (Add, Average, BatchNormalization, Concatenate, Dense, Dot, Dropout, Embedding, Input, Lambda, Layer, 
                                         LayerNormalization, Masking, MultiHeadAttention, Rescaling)
 from tensorflow.keras.models    import Model, Sequential
-from tensorflow.keras.losses    import Loss
+from tensorflow.keras.losses    import Loss, SparseCategoricalCrossentropy
 
 
-##  Global constants for pi and 2pi
+
+##=============##
+##   Globals   ##
+##=============##
+
+##  Numerical constants
 pi, two_pi = math.pi, 2*math.pi
+
+##  An instance of sparse categorical cross-entropy loss
+sparse_categorical_crossentropy_loss = SparseCategoricalCrossentropy(from_logits=True, reduction='none')
+
 
 
 
@@ -90,6 +101,86 @@ def get_nested_sublayers(layer, layers=[]) :
 
     ##  Return container
     return layers
+
+
+def masked_accuracy(label, pred, mask_value=0) :
+    """
+    Computes the sparse categorical cross-entropy over only unmasked tokens
+    May be used as a tf loss function
+    B is batch size, S is sequence length, V is vocab size
+    
+    Inputs:
+    
+        >  label, Tensor of shape [B, S]
+           Ground truth token ID
+    
+        >  pred, Tensor of shape [B, S, V]
+           Predicted token logits for every token in dictionary
+           
+        >  mask_value, int, default=0
+           Token ID to be interpreted as masked
+    """
+    ##  Create the mask wherever the label is zero
+    mask = label != mask_value
+    
+    ##  Get the predicted token-id using an argmax along the final axis
+    pred  = tf.argmax(pred, axis=-1)
+    
+    ##  Determine whether the predicted token matches the label
+    label = tf.cast(label, pred.dtype)
+    match = label == pred
+    
+    ##  Mask the matches
+    match = match & mask
+    
+    ##  Cast matches and mask to float, and compute masked average
+    match = tf.cast(match, dtype=tf.float32)
+    mask  = tf.cast(mask , dtype=tf.float32)
+    acc   = tf.reduce_sum(match) / tf.reduce_sum(mask)
+    
+    ##  Return accuracy
+    return acc
+
+
+def masked_sparse_categorical_crossentropy(label, pred, mask_value:int=0, weight_seq_by_length:bool=False) :
+    """
+    Computes the sparse categorical cross-entropy over only unmasked tokens
+    May be used as a tf loss function
+    B is batch size, S is sequence length, V is vocab size
+    
+    Inputs:
+    
+        >  label, Tensor of shape [B, S]
+           Ground truth token ID
+    
+        >  pred, Tensor of shape [B, S, V]
+           Predicted token logits for every token in dictionary
+           
+        >  mask_value, int, default=0
+           Token ID to be interpreted as masked
+           
+        >  weight_seq_by_length, bool, default=False
+           If True then a sequence with S' unmasked values receives a weight of S' in the loss combination
+    """
+    ##  Create the mask wherever the label is zero
+    mask = label != mask_value
+    
+    ##  Calculate the loss for every token, including masked tokens
+    loss = sparse_categorical_crossentropy_loss(label, pred)
+    
+    ##  Cast the mask to the same dtype as the loss values
+    mask = tf.cast(mask, dtype=loss.dtype)
+    
+    ##  Calculate sum loss over sequence, excluding the masked values
+    loss *= mask
+    loss = tf.reduce_sum(loss)
+    
+    ##  Calculate average loss over the unmasked values if configured
+    if not weight_seq_by_length :
+        loss /= tf.reduce_sum(mask)
+    
+    ##  Return loss value
+    return loss
 
 
 
@@ -201,7 +292,7 @@ class AttentionBlock(CustomLayer) :
 
         ##  Execute attention, skip-connection and layer-normalisation
         y = self._mha(query=q, value=v, use_causal_mask=self.use_causal_mask, training=training)
-        if self.skip_connect : y = self._average([x, y])
+        if self.skip_connect : y = self._average([q, y])
         if self.layer_norm   : y = self._layernorm(y, training=training)
         return y
 
@@ -258,9 +349,161 @@ class AttentionBlock(CustomLayer) :
 
 
 
-#==============================##
-#   EncoderBlock keras layer   ##
-#==============================##
+
+##==============================##
+##   DecoderBlock keras layer   ##
+##==============================##
+##
+class DecoderBlock(CustomLayer) :
+
+
+    def __init__(self, ndim_out:int, num_heads:int, ndim_hidden_mha:int, ndim_hidden_ff:int, num_hidden_layers_ff:int=1, dropout_mha:float=0, dropout_ff:float=0, skip_connect:bool=True, 
+                 layer_norm:bool=True, use_causal_mask:bool=True, activation:str="relu", _self_att_block:AttentionBlock=None, _cross_att_block:AttentionBlock=None, **kwargs) :
+        """
+        A keras layer for applying causally-masked multi-head self-attention, followed by cross-attention to an encoded sequence
+        encoded sequence
+
+        Inputs:
+
+            >  ndim_out, int
+               Number of neurons in the output layer of attention and feed-forward blocks
+
+            >  num_heads, int
+               Number of attention heads to run in parallel
+
+            >  ndim_hidden_mha, int
+               Number of neurons in the hidden dimensions of each attention head
+
+            >  ndim_hidden_ff, int
+               Number of neurons in the hidden layer(s) of the feed-forward block
+
+            >  num_hidden_layers_ff, int, default=1
+               Number of hidden layers in the feed-forward block
+
+            >  dropout_mha, float, default=0
+               Dropout rate in the multi-head attention block
+
+            >  dropout_ff, float, default=0
+               Dropout rate in the feed-forward block
+
+            >  skip_connect, bool, default=True
+               Whether to use skip-connections in the attention and feed-forward blocks
+
+            >  layer_norm, bool, default=True
+               Whether to use layer normalisation in the attention and feed-forward blocks
+
+            >  use_causal_mask, bool, default=True
+               Whether to apply a causal mask in the multi-head attention block
+
+            >  activation, str, default="relu"
+               Activation function for non-linear layers
+
+            >  _self_att_block, AttentionBlock, default=None
+               Pre-existing AttentionBlock layer for self-attention step, perhaps deserialised after loading from file
+
+            >  _cross_att_block, AttentionBlock, default=None
+               Pre-existing AttentionBlock layer for cross-attention step, perhaps deserialised after loading from file
+        """
+        ##  Initialise base class
+        super().__init__(**kwargs)
+        
+        ##  Store all arguments provided to __init__, as these will be needed to implement model saving through the get_config() method
+        self.ndim_out             = ndim_out
+        self.num_heads            = num_heads
+        self.ndim_hidden_mha      = ndim_hidden_mha
+        self.ndim_hidden_ff       = ndim_hidden_ff
+        self.num_hidden_layers_ff = num_hidden_layers_ff
+        self.dropout_mha          = dropout_mha
+        self.dropout_ff           = dropout_ff
+        self.skip_connect         = skip_connect
+        self.layer_norm           = layer_norm
+        self.use_causal_mask      = use_causal_mask
+        self.activation           = activation
+        
+        ##  Create keras layers
+        base_name = self.name
+        if   _self_att_block  : self._self_att_block  = _self_att_block
+        else                  : self._self_att_block  = AttentionBlock(name=f"{base_name}_self_attention_block" , ndim_out=ndim_out, ndim_hidden=ndim_hidden_mha, dropout=dropout_mha, skip_connect=skip_connect, layer_norm=layer_norm, dtype=self.dtype, num_heads=num_heads, use_causal_mask=use_causal_mask, self_attention=True)
+        if   _cross_att_block : self._cross_att_block = _cross_att_block
+        else                  : self._cross_att_block = AttentionBlock(name=f"{base_name}_cross_attention_block", ndim_out=ndim_out, ndim_hidden=ndim_hidden_mha, dropout=dropout_mha, skip_connect=skip_connect, layer_norm=layer_norm, dtype=self.dtype, num_heads=num_heads, use_causal_mask=False, self_attention=False)
+        self._ff_block_1 = FeedForwardBlock(name=f"{base_name}_feedfwd_block_1", ndim_out=ndim_out, ndim_hidden=ndim_hidden_ff, dropout=dropout_ff, skip_connect=skip_connect, layer_norm=layer_norm, dtype=self.dtype, batch_norm=False, activation=activation, num_hidden_layers=num_hidden_layers_ff)
+        self._ff_block_2 = FeedForwardBlock(name=f"{base_name}_feedfwd_block_2", ndim_out=ndim_out, ndim_hidden=ndim_hidden_ff, dropout=dropout_ff, skip_connect=skip_connect, layer_norm=layer_norm, dtype=self.dtype, batch_norm=False, activation=activation, num_hidden_layers=num_hidden_layers_ff)
+                    
+        
+    def call(self, x, training=False, mask=None) :
+        """
+        Apply a multi-head self-attention and feed-forward block to a sequence.
+        """
+        seq_dec , seq_enc  = x[0]   , x[1]
+        mask_dec, mask_enc = mask[0], mask[1]
+        seq_dec = self._self_att_block (seq_dec, training=training)                  # N.B uses internal keras_mask so no mask argument needed
+        seq_dec = self._ff_block_1     (seq_dec, mask=mask_dec, training=training)   
+        seq_dec = self._cross_att_block([seq_dec, seq_enc], training=training)       # N.B uses internal keras_mask so no mask argument needed
+        seq_dec = self._ff_block_2     (seq_dec, mask=mask_dec, training=training)   
+        return seq_dec
+
+
+    def compute_mask(self, *args, **kwargs) :
+        """
+        Compute the mask generated by the multi-head attention layer
+        """
+        return self._cross_att_block.compute_mask(*args, **kwargs)
+    
+
+    @classmethod
+    def from_config(cls, config) :
+        """
+        Create a new EncoderBlock layer from a dictionary generated by the get_config() method.
+        """
+
+        ##  Deserialise the AttentionBlock layers inside config
+        if "_self_att_block" in config :
+            config['_self_att_block'] = tf.keras.layers.deserialize(config['_self_att_block'])
+        if "_cross_att_block" in config :
+            config['_cross_att_block'] = tf.keras.layers.deserialize(config['_cross_att_block'])
+
+        ##  Load from config
+        return super().from_config(config)
+    
+
+    def get_config(self) :
+        """
+        Create the config dict needed to save models that contain EncoderBlock layers. 
+        This dict stores all values we need to pass to __init__ to create a EncoderBlock layer with the same configuration.
+        The config dict includes a serialised copy of the AttentionBlock layer that must be deserialised upon loading.
+        """
+        config = super().get_config()
+        config.update(
+            {
+                "ndim_out"             : self.ndim_out, 
+                "num_heads"            : self.num_heads, 
+                "ndim_hidden_mha"      : self.ndim_hidden_mha, 
+                "ndim_hidden_ff"       : self.ndim_hidden_ff, 
+                "num_hidden_layers_ff" : self.num_hidden_layers_ff, 
+                "dropout_mha"          : self.dropout_mha, 
+                "dropout_ff"           : self.dropout_ff, 
+                "skip_connect"         : self.skip_connect, 
+                "layer_norm"           : self.layer_norm, 
+                "use_causal_mask"      : self.use_causal_mask, 
+                "activation"           : self.activation,
+                "_self_att_block"      : tf.keras.layers.serialize(self._self_att_block),
+                "_cross_att_block"     : tf.keras.layers.serialize(self._cross_att_block),
+            })
+        return config
+
+
+    @classmethod
+    def get_custom_layer_types(cls) :
+        """
+        Return a set of custom layers used by this class.
+        """
+        return (AttentionBlock, FeedForwardBlock)
+    
+
+
+##==============================##
+##   EncoderBlock keras layer   ##
+##==============================##
 ##
 class EncoderBlock(CustomLayer) :
 
@@ -298,7 +541,7 @@ class EncoderBlock(CustomLayer) :
             >  layer_norm, bool, default=True
                Whether to use layer normalisation in both the multi-head attention and feed-forward blocks
 
-            >  use_causal_mask, bool, default=True
+            >  use_causal_mask, bool, default=False
                Whether to apply a causal mask in the multi-head attention block
 
             >  activation, str, default="relu"
@@ -395,6 +638,82 @@ class EncoderBlock(CustomLayer) :
         Return a set of custom layers used by this class.
         """
         return (AttentionBlock, FeedForwardBlock)
+
+
+
+##===========================##
+##   Enumerate keras layer   ##
+##===========================##
+##
+class Enumerate(Layer) :
+
+    def __init__(self, index_from_zero:bool=True, **kwargs) :
+        '''
+        Class Enumerate
+
+        A keras layer that creates a new tensor enumerating the right-most indices of the input.
+        '''
+        ##  Dtype should fall back to tf.int32
+        kwargs["dtype"] = kwargs.get("dtype", tf.int32)
+
+        ##  Base class contructor
+        super().__init__(**kwargs)
+        
+        ##  Store all arguments provided to __init__, as these will be needed to implement model saving through the get_config() method
+        self.index_from_zero = index_from_zero
+    
+
+    def call(self, x, training=False, mask=None, minimal_dims:bool=True) :
+        '''
+        Create a tensor which enumerates the positions of the right-most column of x, with length N.
+        If minimal_dims=True then output shape is [1, ..., N], otherwise output dims match those of x.
+        '''
+        ##  Get shape of input tensor
+        shape    = tf.shape(x)
+        num_idcs = len(shape)     # Number of tensor indices
+        length   = shape[-1]      # Dim of right-most index
+        
+        ##  Create new tensor of enumerations with shape [1, ..., N]
+        offset = 0 if self.index_from_zero else 1
+        arange = tf.range(offset, offset + length)
+        for i in range(num_idcs-1) :
+            arange = tf.expand_dims(arange, axis=0)
+            
+        ##  If configured for minimal dimensionality output then return this new tensor
+        if minimal_dims :
+            return arange
+             
+        ##  Otherwise tile the new tensor to match the input dimensions and return that
+        tile_size = [shape[i] for i in range(num_idcs-1)]
+        tile_size.append(1)            
+        return tf.tile(arange, tile_size)
+
+    
+    def compute_mask(self, x, mask=None):
+        """
+        Propagate a keras mask through the layer. Mask is a Tensor of bools with either the same shape as x, or one fewer indices.
+        """
+        return mask
+
+    
+    def compute_output_shape(self, input_shape):
+        """
+        Return the expected shape of the output tensor for a given input shape
+        """
+        return input_shape
+    
+
+    def get_config(self) :
+        """
+        Create the config dict needed to save models that contain Enumerate layers. 
+        This dict stores all values we need to pass to __init__ to create a Enumerate layer with the same configuration.
+        """
+        config = super().get_config()
+        config.update(
+            {
+                "index_from_zero" : self.index_from_zero, 
+            })
+        return config
 
 
 
@@ -758,6 +1077,79 @@ class LayerWeightsRecord(Callback) :
         for layer in self.layers :
             self.layer_means[layer.name] = []
             self.layer_stds [layer.name] = []
+
+
+    def plot(self, num_col:int=3, show:bool=True, savefig:str=None, close:bool=True, dpi:int=200) :
+        """
+        Create plot showing the spread of layer weights (mean and std) throughout training
+
+        Inputs:
+        
+            >  num_col, int, default=3
+               Number of axis columns
+
+            >  show, bool, default=True
+               Whether to call plt.show(fig) with the figure created
+
+            >  savefig, str, default=None
+               Optional filename to save the figure to
+
+            >  close, bool, default=True
+               Whether to call plt.close(fig) at the end
+
+            >  dpi, int, default=200
+               Pixels-per-inch when saving to file, for formats that require this
+
+        Returns:
+
+            >  fig, plt.Figure object, the figure created
+        """
+
+        ##  Get names of all layers for which weights have been recorded, an alphabetical order
+        layer_names = [layer_name for layer_name, layer_mean in self.layer_means.items() if len(layer_mean) > 0]
+        layer_names = sorted(layer_names)
+
+        ##  Calculate number of rows needed
+        num_row = math.ceil(len(layer_names) / num_col)
+
+        ##  Create figure object
+        fig = plt.figure(figsize=(4*num_col, 4*num_row))
+        fig.subplots_adjust(hspace=0.3, wspace=0.3)
+
+        ## Iterate over selected layers
+        for layer_idx, layer_name in enumerate(layer_names) :
+
+            ##  Add axis for layer
+            ax  = fig.add_subplot(num_row, num_col, 1+layer_idx)
+            ax.tick_params(which="both", axis="both", direction="in", left=True, top=True, labelsize=8)
+            ax.set_title(layer_name, fontsize=6)
+
+            ##  Pull data from records
+            x  = np.array(self.batch_indices)
+            y  = np.array(self.layer_means[layer_name])
+            ey = np.array(self.layer_stds [layer_name])
+
+            ##  Plot line tracking the layer mean weight, and shade region between std devs
+            ax.plot(x, y, "-", lw=3, c='k')
+            ax.fill_between(x, y-ey, y+ey, fc="darkblue", alpha=0.2, lw=0)
+
+            ##  Draw text label on the first axis only
+            if layer_idx == 0 :
+                ax.text(0, 1.2, "Layer weights vs batch index", weight="bold", ha="left", 
+                        va="bottom", fontsize=16, transform=ax.transAxes)
+
+
+        ##  Save plot
+        if savefig :
+            fig.savefig(savefig, bbox_inches="tight", dpi=dpi)
+
+        ##  Show plot
+        if show :
+            plt.show(fig)
+
+        ##  Close plot
+        if close :
+            plt.close(fig)
         
 
 
@@ -779,7 +1171,7 @@ class LearnableMixture(CustomLayer) :
         ##  Base class contructor
         super().__init__(**kwargs)
 
-        ##  Store all arguments provided to __init__, as these will be needed to implement model saving through the get_config() method
+        ##  Create internal keras layers
         self._add = Add(name=f"{self.name}_add", dtype=self.dtype)
 
 
@@ -867,7 +1259,7 @@ class LoggerCallback(Callback) :
 ##
 class LossRecord(Callback) :
     
-    def __init__(self, batch_frequency:int, val_input, val_output, num_bootstrap:int=-1) :
+    def __init__(self, batch_frequency:int, val_input, val_output, num_bootstrap:int=-1, plot_on_train_end:bool=False) :
         """
         class LossRecord
         
@@ -886,19 +1278,24 @@ class LossRecord(Callback) :
 
             >  num_bootstrap, int, default=-1
                If >0 then we use this many bootstraps to estimate the uncertainty on the loss
+
+            >  plot_on_train_end, bool, default=False
+               If True then show a plot of the loss curve at the end of training
         """
         
         ##  Base class constructor
         super().__init__()
         
         ##  Store arguments
-        self.batch_frequency = batch_frequency
-        self.val_input       = val_input
-        self.val_output      = val_output
-        self.num_bootstrap   = num_bootstrap
+        self.batch_frequency   = batch_frequency
+        self.val_input         = val_input
+        self.val_output        = val_output
+        self.num_bootstrap     = num_bootstrap
+        self.plot_on_train_end = plot_on_train_end
         
         ##  Initialise containers and variables
         self.batch_indices = []
+        self.epoch_starts  = []
         self.val_loss      = []
         self.val_loss_std  = []
         self.batch_offset  = 0
@@ -986,6 +1383,7 @@ class LossRecord(Callback) :
         
         ##  Set self.batch_offset to the number of batches already processed
         self.batch_offset = epoch_idx * self.num_steps
+        self.epoch_starts.append(self.batch_offset)
     
     
     def on_train_begin(self, logs=None) :
@@ -1000,8 +1398,94 @@ class LossRecord(Callback) :
         
         ##  Initialise containers
         self.batch_indices = []
+        self.epoch_starts  = []
         self.val_loss      = []
         self.val_loss_std  = []
+    
+    
+    def on_train_end(self, logs=None) :
+        """
+        Processing to be run at the end of training.
+        
+        Creates a plot of the loss curve if configured to do so
+        """
+        if not self.plot_on_train_end : return
+        self.plot(show=True, close=True)
+
+
+    def plot(self, show:bool=True, savefig:str=None, close:bool=True, dpi:int=200) :
+        """
+        Create plot showing the loss throughout training
+
+        Inputs:
+
+            >  show, bool, default=True
+               Whether to call plt.show(fig) with the figure created
+
+            >  savefig, str, default=None
+               Optional filename to save the figure to
+
+            >  close, bool, default=True
+               Whether to call plt.close(fig) at the end
+
+            >  dpi, int, default=200
+               Pixels-per-inch when saving to file, for formats that require this
+
+        Returns:
+
+            >  fig, plt.Figure object, the figure created
+        """
+    
+        ##  Create and format figure object
+        fig = plt.figure(figsize=(8, 4.5))
+        fig.subplots_adjust(hspace=0.05, wspace=0.3)
+
+        ##  Create and format upper axes for linear y-axis
+        ax1 = fig.add_subplot(2, 1, 1)
+        ax1.tick_params(axis="both", which="both", top=True, right=True, direction="in")
+        ax1.grid()
+
+        ax1.xaxis.set_ticklabels([])
+        ax1.set_ylabel("Val. loss\n[linear]", ha="right", fontsize=14, labelpad=20, rotation=0)
+
+        ##  Create and format lower axes for log y-axis
+        ax2 = fig.add_subplot(2, 1, 2)
+        ax2.tick_params(axis="both", which="both", top=True, right=True, direction="in")
+        ax2.grid()
+        ax2.set_yscale("log")
+
+        ax2.set_ylabel("Val. loss\n[log]", ha="right", fontsize=14, labelpad=20, rotation=0)
+        ax2.set_xlabel("Batch index", va="top", fontsize=14, labelpad=20)
+
+        ##  Pull data as np arrays
+        x, y, yerr = self.batch_indices, self.val_loss, self.val_loss_std
+        x, y, yerr = np.array(x), np.array(y), np.array(yerr)
+
+        ##  Plot loss curves
+        ax1.plot(x, y, "x-", lw=2, c="darkred")
+        ax2.plot(x, y, "x-", lw=2, c="darkred")
+
+        ##  If we have calculated std then use to plot error band
+        if len(yerr) :
+            ax1.fill_between(x, y-yerr, y+yerr, lw=0, fc="darkred", alpha=0.3)
+            ax2.fill_between(x, y-yerr, y+yerr, lw=0, fc="darkred", alpha=0.3)
+        
+        ##  Plot vertical lines at epoch transitions
+        for epoch_start in self.epoch_starts :
+            ax1.axvline(epoch_start-0.5, ls="-", lw=2, c="k")
+            ax2.axvline(epoch_start-0.5, ls="-", lw=2, c="k")
+
+        ##  Save plot
+        if savefig :
+            fig.savefig(savefig, bbox_inches="tight", dpi=dpi)
+
+        ##  Show plot
+        if show :
+            plt.show(fig)
+
+        ##  Close plot
+        if close :
+            plt.close(fig)
 
 
 
@@ -1011,26 +1495,26 @@ class LossRecord(Callback) :
 ##
 class PositionalEncoding(CustomLayer) :
 
-    def __init__(self, slice_index:int, num_freqs:int, min_period:float=5, max_period:float=1e5, base:float=np.e, **kwargs) :
+    def __init__(self, num_freqs:int, slice_index:int=None, min_period:float=5, max_period:float=1e5, base:float=np.e, **kwargs) :
         '''
         class PositionalEncoding
 
         A keras layer for calculating positional encodings for an input Tensor x.
-        x has shape [B, S, N]
+        x has shape [B, S] or [B, S, N]
            B is batch size
            S is sequence length
            N is num features
            F is num frequencies
-        x must contain the token position index at feature index self.slice_index
+        If a third index exists then x must contain the token position index at feature index self.slice_index
         After applying both cos and sin encodings, output vector is of length 2*num_freqs 
 
         Inputs:
 
-            >  slice_index, int
-               Index of the input feature vector corresponding to integer position index
-
             >  num_freqs, int
                Number of frequencies to generate encodings for
+
+            >  slice_index, int, default=None
+               Index of the input feature vector corresponding to integer position index, if None then encode everything
 
             >  min_period, int, default=5
                Period of oscillation for the lowest frequency encoding
@@ -1086,11 +1570,14 @@ class PositionalEncoding(CustomLayer) :
            F is num frequencies
         x must contain the token position index at feature index self.slice_index
         '''
-        x  = x[:, :, self.slice_index, tf.newaxis]      # Shape [B, S, 1]
+        if type(self.slice_index) == type(None) : 
+            x  = x[:, :, tf.newaxis]                    # Shape [B, S, 1]
+        else : 
+            x  = x[:, :, self.slice_index, tf.newaxis]  # Shape [B, S, 1]
         x  = tf.cast(x, self.dtype)
-        cx = tf.math.cos(tf.matmul(x, self._freqs))    # [B, S, 1] * [1, F] --> Shape [B, S, F]
-        sx = tf.math.sin(tf.matmul(x, self._freqs))    # [B, S, 1] * [1, F] --> Shape [B, S, F]
-        return tf.concat([cx, sx], axis=-1)            # Shape [B, S, 2F]
+        cx = tf.math.cos(tf.matmul(x, self._freqs))     # [B, S, 1] * [1, F] --> Shape [B, S, F]
+        sx = tf.math.sin(tf.matmul(x, self._freqs))     # [B, S, 1] * [1, F] --> Shape [B, S, F]
+        return tf.concat([cx, sx], axis=-1)             # Shape [B, S, 2F]
         
 
     def encode_np(self, x) :
@@ -1103,10 +1590,13 @@ class PositionalEncoding(CustomLayer) :
            F is num frequencies
         x must contain the token position index at feature index self.slice_index
         '''
-        x  = x[:, :, self.slice_index, np.newaxis]      # Shape [B, S, 1]
-        cx = np.cos(np.matmul(x, self._freqs_np))      # [B, S, 1] * [1, F] --> Shape [B, S, F]
-        sx = np.sin(np.matmul(x, self._freqs_np))      # [B, S, 1] * [1, F] --> Shape [B, S, F]
-        return np.concat([cx, sx], axis=-1)            # Shape [B, S, 2F]
+        if type(self.slice_index) == type(None) : 
+            x  = x[:, :, np.newaxis]                    # Shape [B, S, 1]
+        else : 
+            x  = x[:, :, self.slice_index, np.newaxis]  # Shape [B, S, 1]
+        cx = np.cos(np.matmul(x, self._freqs_np))       # [B, S, 1] * [1, F] --> Shape [B, S, F]
+        sx = np.sin(np.matmul(x, self._freqs_np))       # [B, S, 1] * [1, F] --> Shape [B, S, F]
+        return np.concat([cx, sx], axis=-1)             # Shape [B, S, 2F]
     
 
     def get_config(self) :

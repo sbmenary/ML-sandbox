@@ -184,11 +184,11 @@ def tokenise_string(s:str, tokeniser_dict:dict, fix_output_length:int=-1, mask_c
         >  mask_char, str, default=''
            Character used to pad string to target length
            
-        >  seq_start_char, str, default=None
-           Character to be stripped from the start of a string
+        >  seq_start_char, str, default=''
+           Character to be appended to the start of a string
            
-        >  seq_end_char, str, default=None
-           Character to be stripped from the end of a string
+        >  seq_end_char, str, default=''
+           Character to be appended to the end of a string
     """
     
     ##  Validate inputs
@@ -230,11 +230,11 @@ def tokenise_strings(dataset:list, tokeniser_dict:dict, fix_output_length:int=-1
         >  mask_char, str, default=''
            Character used to pad string to target length
            
-        >  seq_start_char, str, default=None
-           Character to be stripped from the start of a string
+        >  seq_start_char, str, default=''
+           Character to be appended to the start of a string
            
-        >  seq_end_char, str, default=None
-           Character to be stripped from the end of a string
+        >  seq_end_char, str, default=''
+           Character to be appended to the end of a string
     """
     return np.array([tokenise_string(s, 
                                      tokeniser_dict,
