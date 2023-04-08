@@ -103,7 +103,7 @@ def get_nested_sublayers(layer, layers=[]) :
     return layers
 
 
-def masked_accuracy(label, pred, mask_value=0) :
+def masked_accuracy(y, y_pred, mask_value=0) :
     """
     Computes the sparse categorical cross-entropy over only unmasked tokens
     May be used as a tf loss function
@@ -111,24 +111,24 @@ def masked_accuracy(label, pred, mask_value=0) :
     
     Inputs:
     
-        >  label, Tensor of shape [B, S]
+        >  y, Tensor of shape [B, S]
            Ground truth token ID
     
-        >  pred, Tensor of shape [B, S, V]
+        >  y_pred, Tensor of shape [B, S, V]
            Predicted token logits for every token in dictionary
            
         >  mask_value, int, default=0
            Token ID to be interpreted as masked
     """
     ##  Create the mask wherever the label is zero
-    mask = label != mask_value
+    mask = y != mask_value
     
     ##  Get the predicted token-id using an argmax along the final axis
-    pred  = tf.argmax(pred, axis=-1)
+    y_pred = tf.argmax(y_pred, axis=-1)
     
     ##  Determine whether the predicted token matches the label
-    label = tf.cast(label, pred.dtype)
-    match = label == pred
+    y_pred = tf.cast(y_pred, y.dtype)
+    match = y == y_pred
     
     ##  Mask the matches
     match = match & mask
@@ -142,7 +142,7 @@ def masked_accuracy(label, pred, mask_value=0) :
     return acc
 
 
-def masked_sparse_categorical_crossentropy(label, pred, mask_value:int=0, weight_seq_by_length:bool=False) :
+def masked_sparse_categorical_crossentropy(y, y_pred, mask_value:int=0, weight_seq_by_length:bool=False) :
     """
     Computes the sparse categorical cross-entropy over only unmasked tokens
     May be used as a tf loss function
@@ -150,10 +150,10 @@ def masked_sparse_categorical_crossentropy(label, pred, mask_value:int=0, weight
     
     Inputs:
     
-        >  label, Tensor of shape [B, S]
+        >  y, Tensor of shape [B, S]
            Ground truth token ID
     
-        >  pred, Tensor of shape [B, S, V]
+        >  y_pred, Tensor of shape [B, S, V]
            Predicted token logits for every token in dictionary
            
         >  mask_value, int, default=0
@@ -163,17 +163,17 @@ def masked_sparse_categorical_crossentropy(label, pred, mask_value:int=0, weight
            If True then a sequence with S' unmasked values receives a weight of S' in the loss combination
     """
     ##  Create the mask wherever the label is zero
-    mask = label != mask_value
-    
+    mask = y != mask_value
+        
     ##  Calculate the loss for every token, including masked tokens
-    loss = sparse_categorical_crossentropy_loss(label, pred)
+    loss = sparse_categorical_crossentropy_loss(y, y_pred)
     
     ##  Cast the mask to the same dtype as the loss values
     mask = tf.cast(mask, dtype=loss.dtype)
     
     ##  Calculate sum loss over sequence, excluding the masked values
     loss *= mask
-    loss = tf.reduce_sum(loss)
+    loss  = tf.reduce_sum(loss)
     
     ##  Calculate average loss over the unmasked values if configured
     if not weight_seq_by_length :
@@ -181,7 +181,6 @@ def masked_sparse_categorical_crossentropy(label, pred, mask_value:int=0, weight
     
     ##  Return loss value
     return loss
-
 
 
 
@@ -1253,18 +1252,18 @@ class LoggerCallback(Callback) :
 
 
 
-##===============================##
-##   LossRecord keras callback   ##
-##===============================##
+##=================================##
+##   MetricRecord keras callback   ##
+##=================================##
 ##
-class LossRecord(Callback) :
+class MetricRecord(Callback) :
     
-    def __init__(self, batch_frequency:int, val_input, val_output, num_bootstrap:int=-1, plot_on_train_end:bool=False, plot_frequency:int=-1, 
-                 logger=None, log_lvl:int=logging.DEBUG) :
+    def __init__(self, batch_frequency:int, val_input, val_output, label:str="Partial\nval. loss", func=None, num_bootstrap:int=-1, 
+                 plot_on_train_end:bool=False, plot_frequency:int=-1, logger=None, log_lvl:int=logging.DEBUG) :
         """
-        class LossRecord
+        class MetricRecord
         
-        Tracks the loss over a validation dataset during training
+        Tracks the value of a scale function over a validation dataset during training
         
         Inputs:
             
@@ -1276,6 +1275,13 @@ class LossRecord(Callback) :
                
             >  val_output, Tensor
                True datapoint labels
+
+            >  label, str, default='Partial\\nval. loss'
+               Label of function to be tracked
+
+            >  func, tf function, default=None
+               Function to be tracked, if None then use model.loss
+               Model signature is func(y, y_pred) -> [B,] where y are labels, y_pred is the model output and B is batch size
 
             >  num_bootstrap, int, default=-1
                If >0 then we use this many bootstraps to estimate the uncertainty on the loss
@@ -1300,6 +1306,8 @@ class LossRecord(Callback) :
         self.batch_frequency   = batch_frequency
         self.val_input         = val_input
         self.val_output        = val_output
+        self.label             = label
+        self.func              = func
         self.num_bootstrap     = num_bootstrap
         self.plot_on_train_end = plot_on_train_end
         self.plot_frequency    = plot_frequency
@@ -1309,45 +1317,15 @@ class LossRecord(Callback) :
         ##  Initialise containers and variables
         self.batch_indices = []
         self.epoch_starts  = []
-        self.val_loss      = []
-        self.val_loss_std  = []
+        self.values        = []
+        self.values_std    = []
         self.batch_offset  = 0
 
         ##  Initialise the bootstrap weights
         self.bootstrap_weights = None
         if num_bootstrap > 0 :
-            self.bootstrap_weights = tf.random.poisson((num_bootstrap, len(val_output)), 1)
-
-    
-    @classmethod
-    def from_config(cls, config) :
-        """
-        Create a new LossRecord layer from a dictionary generated by the get_config() method.
-        """
-
-        ##  Deserialise the val_input and val_output tensors
-        config['val_input' ] = tf.io.serialize_tensor(config['val_input' ])
-        config['val_output'] = tf.io.serialize_tensor(config['val_output'])
-
-        ##  Load from config
-        return super().from_config(config)
-    
-
-    def get_config(self) :
-        """
-        Create config dict storing all values needed for __init__ to create a LossRecord layer with the same configuration.
-        """
-        config = super().get_config()
-        config.update(
-            {
-                "batch_frequency"   : self.batch_frequency,
-                "val_input"         : tf.io.serialize_tensor(self.val_input), 
-                "val_output"        : tf.io.serialize_tensor(self.val_output), 
-                "num_bootstrap"     : self.num_bootstrap,
-                "plot_on_train_end" : self.plot_on_train_end,
-                "plot_frequency"    : self.plot_frequency,
-            })
-        return config
+            num_data = len(val_input)
+            self.bootstrap_indices = np.random.choice(num_data, size=(num_bootstrap, num_data))
 
         
     def on_batch_end(self, batch_idx:int, logs=None) :
@@ -1369,28 +1347,34 @@ class LossRecord(Callback) :
         self.batch_indices.append(batch_idx)
         
         ##  Calculate + store the loss
-        y, y_pred = self.val_output, self.model(self.val_input, training=False)
-        loss      = self.model.compute_loss(y=y, y_pred=y_pred).numpy()
-        self.val_loss.append(loss)
+        x = self.val_input
+        y, y_pred  = self.val_output, self.model(x, training=False)
+        batch_vals = self.func(y=y, y_pred=y_pred).numpy()
+        if len(batch_vals.shape) == 2 and batch_vals.shape[-1] == 1 : batch_vals = batch_vals[:,0]
+        value = np.mean(batch_vals)
+        self.values.append(value)
 
         ##  Find std dev on loss using bootstraps if configured
-        loss_std = None
+        values_std = None
         if self.num_bootstrap > 0 : 
 
             ##  Do bootstraps
-            bs_losses = []
-            for sample_weight in self.bootstrap_weights :
-                loss = self.model.compute_loss(y=y, y_pred=y_pred, sample_weight=sample_weight).numpy()
-                loss *= len(sample_weight) / sample_weight.numpy().sum()
-                bs_losses.append(loss)
+            bs_vals = []
+            for bootstrap_indices in self.bootstrap_indices :
+                x       = [tf.gather(xp, bootstrap_indices) for xp in self.val_input] if type(self.val_input) is list else tf.gather(self.val_input, bootstrap_indices)
+                y       = tf.gather(self.val_output, bootstrap_indices)
+                y_pred  = self.model(x, training=False)
+                batch_vals = self.func(y=y, y_pred=y_pred).numpy()
+                if len(batch_vals.shape) == 2 and batch_vals.shape[-1] == 1 : batch_vals = batch_vals[:,0]
+                bs_vals.append(np.mean(batch_vals))
 
             ##  Store std dev
-            loss_std = np.std(bs_losses)
-            self.val_loss_std.append(loss_std)
+            values_std = np.std(bs_vals)
+            self.values_std.append(values_std)
 
         ##  Log if configured
         if self.logger :
-            self.logger.log(self.log_lvl, f"Validation loss after {batch_idx} batches is {loss_std}{f' +- {loss_std}' if loss_std else ''}")
+            self.logger.log(self.log_lvl, f"Validation loss after {batch_idx} batches is {value}{f' +- {values_std}' if values_std else ''}")
 
         ##  Plot if configured
         if self.plot_frequency > 0 and (len(self.batch_indices) % self.plot_frequency == 0) :
@@ -1422,12 +1406,16 @@ class LossRecord(Callback) :
         ##  Initialise variables
         self.num_steps    = self.params["steps"]
         self.batch_offset = 0 
+
+        ##  If no func provided then fallback to model loss function
+        if type(self.func) == type(None) :
+            self.func = self.model.loss
         
         ##  Initialise containers
         self.batch_indices = []
         self.epoch_starts  = []
-        self.val_loss      = []
-        self.val_loss_std  = []
+        self.values        = []
+        self.values_std    = []
     
     
     def on_train_end(self, logs=None) :
@@ -1464,42 +1452,41 @@ class LossRecord(Callback) :
         """
     
         ##  Create and format figure object
-        fig = plt.figure(figsize=(8, 3.5))
+        fig = plt.figure(figsize=(8, 5))
         fig.subplots_adjust(hspace=0.05, wspace=0.3)
 
         ##  Create and format upper axes for linear y-axis
-        #ax1 = fig.add_subplot(2, 1, 1)
-        #ax1.tick_params(axis="both", which="both", top=True, right=True, direction="in")
-        #ax1.grid()
-
-        #ax1.xaxis.set_ticklabels([])
-        #ax1.set_ylabel("Val. loss\n[linear]", ha="right", fontsize=14, labelpad=20, rotation=0)
+        ax1 = fig.add_subplot(2, 1, 1)
+        ax1.tick_params(axis="both", which="both", top=True, right=True, direction="in")
+        ax1.grid(which="both")
+        ax1.xaxis.set_ticklabels([])
+        ax1.set_ylabel(f"{self.label}\n[linear]", ha="right", fontsize=14, labelpad=20, rotation=0)
 
         ##  Create and format lower axes for log y-axis
-        ax2 = fig.add_subplot(2, 1, 1)
+        ax2 = fig.add_subplot(2, 1, 2)
         ax2.tick_params(axis="both", which="both", top=True, right=True, direction="in")
         ax2.set_yscale("log")
         ax2.grid(which="both")
 
-        ax2.set_ylabel("Val. loss", ha="right", fontsize=14, labelpad=20, rotation=0)
+        ax2.set_ylabel(f"{self.label}\n[log]", ha="right", fontsize=14, labelpad=20, rotation=0)
         ax2.set_xlabel("Batch index", va="top", fontsize=14, labelpad=20)
 
         ##  Pull data as np arrays
-        x, y, yerr = self.batch_indices, self.val_loss, self.val_loss_std
+        x, y, yerr = self.batch_indices, self.values, self.values_std
         x, y, yerr = np.array(x), np.array(y), np.array(yerr)
 
         ##  Plot loss curves
-        #ax1.plot(x, y, "x-", lw=2, c="darkred")
+        ax1.plot(x, y, "x-", lw=2, c="darkred")
         ax2.plot(x, y, "x-", lw=2, c="darkred")
 
         ##  If we have calculated std then use to plot error band
         if len(yerr) :
-            #ax1.fill_between(x, y-yerr, y+yerr, lw=0, fc="darkred", alpha=0.3)
+            ax1.fill_between(x, y-yerr, y+yerr, lw=0, fc="darkred", alpha=0.3)
             ax2.fill_between(x, y-yerr, y+yerr, lw=0, fc="darkred", alpha=0.3)
         
         ##  Plot vertical lines at epoch transitions
         for epoch_start in self.epoch_starts :
-            #ax1.axvline(epoch_start-0.5, ls="-", lw=2, c="k")
+            ax1.axvline(epoch_start-0.5, ls="-", lw=2, c="k")
             ax2.axvline(epoch_start-0.5, ls="-", lw=2, c="k")
 
         ##  Save plot
