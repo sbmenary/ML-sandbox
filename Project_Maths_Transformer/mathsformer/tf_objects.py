@@ -1259,7 +1259,8 @@ class LoggerCallback(Callback) :
 ##
 class LossRecord(Callback) :
     
-    def __init__(self, batch_frequency:int, val_input, val_output, num_bootstrap:int=-1, plot_on_train_end:bool=False) :
+    def __init__(self, batch_frequency:int, val_input, val_output, num_bootstrap:int=-1, plot_on_train_end:bool=False, plot_frequency:int=-1, 
+                 logger=None, log_lvl:int=logging.DEBUG) :
         """
         class LossRecord
         
@@ -1281,6 +1282,15 @@ class LossRecord(Callback) :
 
             >  plot_on_train_end, bool, default=False
                If True then show a plot of the loss curve at the end of training
+
+            >  plot_frequency, int, default=-1
+               If > 0 then show a plot every time we have generated this many datapoints
+
+            >  logger, Logger, default=None
+               If provided then use this to log the loss curve as it is generated
+
+            >  log_lvl, int, default=DEBUG
+               Log level if a logger is being used
         """
         
         ##  Base class constructor
@@ -1292,6 +1302,9 @@ class LossRecord(Callback) :
         self.val_output        = val_output
         self.num_bootstrap     = num_bootstrap
         self.plot_on_train_end = plot_on_train_end
+        self.plot_frequency    = plot_frequency
+        self.logger            = logger
+        self.log_lvl           = log_lvl
         
         ##  Initialise containers and variables
         self.batch_indices = []
@@ -1327,13 +1340,15 @@ class LossRecord(Callback) :
         config = super().get_config()
         config.update(
             {
-                "batch_frequency" : self.batch_frequency,
-                "val_input"       : tf.io.serialize_tensor(self.val_input), 
-                "val_output"      : tf.io.serialize_tensor(self.val_output), 
-                "num_bootstrap"   : self.num_bootstrap,
+                "batch_frequency"   : self.batch_frequency,
+                "val_input"         : tf.io.serialize_tensor(self.val_input), 
+                "val_output"        : tf.io.serialize_tensor(self.val_output), 
+                "num_bootstrap"     : self.num_bootstrap,
+                "plot_on_train_end" : self.plot_on_train_end,
+                "plot_frequency"    : self.plot_frequency,
             })
         return config
-        
+
         
     def on_batch_end(self, batch_idx:int, logs=None) :
         """
@@ -1350,25 +1365,37 @@ class LossRecord(Callback) :
         if (batch_idx != 0) and ((batch_idx+1) % self.batch_frequency != 0) : return
         
         ##  Store the batch index, using self.batch_offset to ensure continuation over epochs
-        self.batch_indices.append(self.batch_offset + batch_idx)
+        batch_idx += self.batch_offset
+        self.batch_indices.append(batch_idx)
         
         ##  Calculate + store the loss
         y, y_pred = self.val_output, self.model(self.val_input, training=False)
-        self.val_loss.append(self.model.compute_loss(y=y, y_pred=y_pred).numpy())
+        loss      = self.model.compute_loss(y=y, y_pred=y_pred).numpy()
+        self.val_loss.append(loss)
 
-        ##  If not bootstrapping then end here
-        if self.num_bootstrap < 1 : return
+        ##  Find std dev on loss using bootstraps if configured
+        loss_std = None
+        if self.num_bootstrap > 0 : 
 
-        ##  Do bootstraps
-        bs_losses = []
-        for sample_weight in self.bootstrap_weights :
-            loss = self.model.compute_loss(y=y, y_pred=y_pred, sample_weight=sample_weight).numpy()
-            loss *= len(sample_weight) / sample_weight.numpy().sum()
-            bs_losses.append(loss)
+            ##  Do bootstraps
+            bs_losses = []
+            for sample_weight in self.bootstrap_weights :
+                loss = self.model.compute_loss(y=y, y_pred=y_pred, sample_weight=sample_weight).numpy()
+                loss *= len(sample_weight) / sample_weight.numpy().sum()
+                bs_losses.append(loss)
 
-        ##  Store std dev
-        self.val_loss_std.append(np.std(bs_losses))
-    
+            ##  Store std dev
+            loss_std = np.std(bs_losses)
+            self.val_loss_std.append(loss_std)
+
+        ##  Log if configured
+        if self.logger :
+            self.logger.log(self.log_lvl, f"Validation loss after {batch_idx} batches is {loss_std}{f' +- {loss_std}' if loss_std else ''}")
+
+        ##  Plot if configured
+        if self.plot_frequency > 0 and (len(self.batch_indices) % self.plot_frequency == 0) :
+            self.plot(show=True, close=True)
+
     
     def on_epoch_begin(self, epoch_idx:int, logs=None) :
         """
@@ -1437,24 +1464,24 @@ class LossRecord(Callback) :
         """
     
         ##  Create and format figure object
-        fig = plt.figure(figsize=(8, 4.5))
+        fig = plt.figure(figsize=(8, 3.5))
         fig.subplots_adjust(hspace=0.05, wspace=0.3)
 
         ##  Create and format upper axes for linear y-axis
-        ax1 = fig.add_subplot(2, 1, 1)
-        ax1.tick_params(axis="both", which="both", top=True, right=True, direction="in")
-        ax1.grid()
+        #ax1 = fig.add_subplot(2, 1, 1)
+        #ax1.tick_params(axis="both", which="both", top=True, right=True, direction="in")
+        #ax1.grid()
 
-        ax1.xaxis.set_ticklabels([])
-        ax1.set_ylabel("Val. loss\n[linear]", ha="right", fontsize=14, labelpad=20, rotation=0)
+        #ax1.xaxis.set_ticklabels([])
+        #ax1.set_ylabel("Val. loss\n[linear]", ha="right", fontsize=14, labelpad=20, rotation=0)
 
         ##  Create and format lower axes for log y-axis
-        ax2 = fig.add_subplot(2, 1, 2)
+        ax2 = fig.add_subplot(2, 1, 1)
         ax2.tick_params(axis="both", which="both", top=True, right=True, direction="in")
-        ax2.grid()
         ax2.set_yscale("log")
+        ax2.grid(which="both")
 
-        ax2.set_ylabel("Val. loss\n[log]", ha="right", fontsize=14, labelpad=20, rotation=0)
+        ax2.set_ylabel("Val. loss", ha="right", fontsize=14, labelpad=20, rotation=0)
         ax2.set_xlabel("Batch index", va="top", fontsize=14, labelpad=20)
 
         ##  Pull data as np arrays
@@ -1462,17 +1489,17 @@ class LossRecord(Callback) :
         x, y, yerr = np.array(x), np.array(y), np.array(yerr)
 
         ##  Plot loss curves
-        ax1.plot(x, y, "x-", lw=2, c="darkred")
+        #ax1.plot(x, y, "x-", lw=2, c="darkred")
         ax2.plot(x, y, "x-", lw=2, c="darkred")
 
         ##  If we have calculated std then use to plot error band
         if len(yerr) :
-            ax1.fill_between(x, y-yerr, y+yerr, lw=0, fc="darkred", alpha=0.3)
+            #ax1.fill_between(x, y-yerr, y+yerr, lw=0, fc="darkred", alpha=0.3)
             ax2.fill_between(x, y-yerr, y+yerr, lw=0, fc="darkred", alpha=0.3)
         
         ##  Plot vertical lines at epoch transitions
         for epoch_start in self.epoch_starts :
-            ax1.axvline(epoch_start-0.5, ls="-", lw=2, c="k")
+            #ax1.axvline(epoch_start-0.5, ls="-", lw=2, c="k")
             ax2.axvline(epoch_start-0.5, ls="-", lw=2, c="k")
 
         ##  Save plot
