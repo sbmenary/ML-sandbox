@@ -7,10 +7,34 @@ Definition of utility methods.
 """
 
 import __main__
-import datetime, logging, os, random, sys, time
+import datetime, enum, logging, os, random, sys, time
 
 import numpy      as np
 import tensorflow as tf
+
+
+
+##===============##
+##   Constants   ##
+##===============##
+
+class CustomLogLevel(enum.IntEnum) :
+	"""
+	Enumeration for cutom log-levels that live between logging.DEBUG=10 and logging.INFO=20.
+	This allows us to enumerate package-specific debug-levels without falling all the way back to the system DEBUG level.
+	"""
+	CRITICAL          = 50
+	ERROR             = 40
+	WARNING           = 30
+	INFO              = 20
+	DEBUG_VERY_LOW    = 19
+	DEBUG_LOW         = 18
+	DEBUG_MEDIUM_LOW  = 16
+	DEBUG_MEDIUM      = 15
+	DEBUG_MEDIUM_HIGH = 14
+	DEBUG_HIGH        = 12
+	DEBUG_VERY_HIGH   = 11
+	DEBUG             = 10
 
 
 
@@ -140,11 +164,14 @@ def fancy_message(message:str) :
 
 
 
-def initialise_logging(iostream=sys.stdout, fname:str=None, log_lvl_iostream:int=logging.INFO, log_lvl_fstream:int=logging.DEBUG) :
+def initialise_logging(name:str=None, iostream=sys.stdout, fname:str=None, log_lvl_iostream:int=logging.INFO, log_lvl_fstream:int=logging.DEBUG) :
     """
     Create new logger object without output streams to stdout and to file.
     
     Inputs:
+
+    	>  name, str, default=None
+    	   Name of the logger to be configured
     
         >  iostream, streamable object, default=sys.stdout
            Output stream, if None then do not create an iostream
@@ -164,19 +191,19 @@ def initialise_logging(iostream=sys.stdout, fname:str=None, log_lvl_iostream:int
     """
     
     ##  Get root logger
-    logger = logging.getLogger()
-    
+    logger = logging.getLogger(name)
+
     ##  Create stream to output log messages, default is sys.stdout
     if type(iostream) != type(None) :
         io_handler = logging.StreamHandler(sys.stdout)
-        io_handler.setFormatter(logging.Formatter("%(levelname)7s  %(message)s"))
+        io_handler.setFormatter(logging.Formatter("%(levelname)7s %(funcName)s: %(message)s"))
         io_handler.setLevel(log_lvl_iostream)
         logger.addHandler(io_handler)
 
     ##  Create stream to output log messages to file
     if fname :
         f_handler = logging.FileHandler(fname)
-        f_handler.setFormatter(logging.Formatter("%(levelname)7s  %(message)s"))
+        f_handler.setFormatter(logging.Formatter("%(levelname)7s %(asctime)s %(filename)s %(funcName)s: %(message)s", "%Y-%m-%d %H:%M:%S"))
         f_handler.setLevel(log_lvl_fstream)
         logger.addHandler(f_handler)
 
@@ -193,7 +220,7 @@ def initialise_logging(iostream=sys.stdout, fname:str=None, log_lvl_iostream:int
 
 
 
-def initialise_program(program_description:str, working_dir:str, global_config:dict, log_lvl_iostream:int=logging.INFO, log_lvl_fstream:int=logging.DEBUG) :
+def initialise_program(program_description:str, working_dir:str, global_config:dict, logger_name:str="mathsformer", log_lvl_iostream:int=logging.INFO, log_lvl_fstream:int=logging.DEBUG) :
     """
     Groups many repeated program initialisation routines together. Steps are:
     1. Create a new working directory at working_dir, using global_config to resolve any name tags
@@ -212,6 +239,9 @@ def initialise_program(program_description:str, working_dir:str, global_config:d
     
         >  global_config, dict
            Dictionary of config values
+
+        >  logger_name, str, default='mathsformer'
+           Name of the logger to be configured
     
         >  log_lvl_iostream, int, default=logging.INFO
            Log-level for output stream to stdout
@@ -233,7 +263,7 @@ def initialise_program(program_description:str, working_dir:str, global_config:d
     print(fancy_message(f"Working directory created at {working_dir}"))
     
     ##  Start logging to stdout and to a file stream in working directory
-    logger = initialise_logging(fname=f"{working_dir}/log.txt", log_lvl_iostream=log_lvl_iostream, log_lvl_fstream=log_lvl_fstream)
+    logger = initialise_logging(name=logger_name, fname=f"{working_dir}/log.txt", log_lvl_iostream=log_lvl_iostream, log_lvl_fstream=log_lvl_fstream)
 
     ##  Log program being run
     if hasattr(__main__, "__file__") : logger.info(f"Running program: {__main__.__file__}")

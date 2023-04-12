@@ -782,10 +782,8 @@ class FeedForwardBlock(CustomLayer) :
         '''
         y = x
         y = self._dense_block(y, training=training)
-        if self.dropout > 0  : y = self._dropout   (y     , training=training)
         y = self._dense_out  (y, training=training)
         if self.skip_connect : y = self._average   ([x, y], training=training)
-        if self.layer_norm   : y = self._layer_norm(y     , training=training) 
         return y
 
 
@@ -823,13 +821,15 @@ class FeedForwardBlock(CustomLayer) :
         dtype, base_name, dense_block_layers = self.dtype, self.name, []
         for l_idx in range(self.num_hidden_layers) :
             dense_block_layers.append(Dense(self.ndim_hidden, dtype=dtype, name=f"{base_name}_dense_hidden_{l_idx+1}", activation=self.activation))
-            if not self.batch_norm : continue
-            dense_block_layers.append(BatchNormalization(dtype=dtype, name=f"{base_name}_batch_norm_{l_idx+1}"))
+            if self.batch_norm : 
+                dense_block_layers.append(BatchNormalization(dtype=dtype, name=f"{base_name}_batch_norm_{l_idx+1}"))
+            if self.layer_norm  :
+                dense_block_layers.append(LayerNormalization(dtype=dtype, name=f"{base_name}_layer_norm_{l_idx+1}"))
+            if self.dropout > 0 :
+                dense_block_layers.append(Dropout(self.dropout, dtype=dtype, name=f"{base_name}_dropout_{l_idx+1}"))
         self._dense_block  = Sequential(dense_block_layers, name=f"{base_name}_dense_block")
-        self._dense_out    = Dense  (self.ndim_out, dtype=dtype, name=f"{base_name}_dense_out", activation='linear')
-        self._dropout      = Dropout(self.dropout , dtype=dtype, name=f"{base_name}_dropout"   ) if self.dropout > 0  else None
-        self._average      = Average               (dtype=dtype, name=f"{base_name}_average"   ) if self.skip_connect else None
-        self._layer_norm   = LayerNormalization    (dtype=dtype, name=f"{base_name}_layer_norm") if self.layer_norm   else None
+        self._dense_out    = Dense     (self.ndim_out, dtype=dtype, name=f"{base_name}_dense_out", activation='linear')
+        self._average      = Average   (dtype=dtype, name=f"{base_name}_average") if self.skip_connect else None
 
 
 
@@ -1248,7 +1248,7 @@ class LoggerCallback(Callback) :
         """
         self.logger.log(self.loglvl, f"Training reached the end of epoch at index {epoch_idx}")
         for log_name, log_val in logs.items() :
-            self.logger.log(self.loglvl, f"    with metric {log_name}: {log_val}")
+            self.logger.log(self.loglvl, f"    with metric {log_name}: {log_val:.5}")
 
 
 
@@ -1259,7 +1259,8 @@ class LoggerCallback(Callback) :
 class MetricRecord(Callback) :
     
     def __init__(self, batch_frequency:int, val_input, val_output, label:str="Partial\nval. loss", func=None, num_bootstrap:int=-1, 
-                 plot_on_train_end:bool=False, plot_frequency:int=-1, logger=None, log_lvl:int=logging.DEBUG) :
+                 plot_on_train_end:bool=False, plot_on_epoch_end:bool=False, plot_frequency:int=-1, yscale:str="log", 
+                 logger=None, log_lvl:int=logging.DEBUG) :
         """
         class MetricRecord
         
@@ -1289,8 +1290,14 @@ class MetricRecord(Callback) :
             >  plot_on_train_end, bool, default=False
                If True then show a plot of the loss curve at the end of training
 
+            >  plot_on_epoch_end, bool, default=False
+               If True then show a plot of the loss curve at the end of each epoch
+
             >  plot_frequency, int, default=-1
                If > 0 then show a plot every time we have generated this many datapoints
+
+            >  yscale, str, default="log"
+               Type of yscale to use for plotting
 
             >  logger, Logger, default=None
                If provided then use this to log the loss curve as it is generated
@@ -1303,28 +1310,32 @@ class MetricRecord(Callback) :
         super().__init__()
         
         ##  Store arguments
-        self.batch_frequency   = batch_frequency
-        self.val_input         = val_input
-        self.val_output        = val_output
-        self.label             = label
-        self.func              = func
-        self.num_bootstrap     = num_bootstrap
-        self.plot_on_train_end = plot_on_train_end
-        self.plot_frequency    = plot_frequency
-        self.logger            = logger
-        self.log_lvl           = log_lvl
+        self.batch_frequency    = batch_frequency
+        self.val_input          = val_input
+        self.val_output         = val_output
+        self.label              = label
+        self.func               = func
+        self.num_bootstrap      = num_bootstrap
+        self.plot_on_train_end  = plot_on_train_end
+        self.plot_on_epoch_end  = plot_on_epoch_end
+        self.plot_frequency     = plot_frequency
+        self.yscale             = yscale
+        self.logger             = logger
+        self.log_lvl            = log_lvl
         
         ##  Initialise containers and variables
         self.batch_indices = []
         self.epoch_starts  = []
         self.values        = []
-        self.values_std    = []
+        self.values_11pct  = []
+        self.values_50pct  = []
+        self.values_89pct  = []
         self.batch_offset  = 0
 
         ##  Initialise the bootstrap weights
         self.bootstrap_weights = None
         if num_bootstrap > 0 :
-            num_data = len(val_input)
+            num_data = len(val_output)
             self.bootstrap_indices = np.random.choice(num_data, size=(num_bootstrap, num_data))
 
         
@@ -1340,7 +1351,8 @@ class MetricRecord(Callback) :
         """
         
         ##  Only proceed with the given batch frequency
-        if (batch_idx != 0) and ((batch_idx+1) % self.batch_frequency != 0) : return
+        #if (batch_idx != 0) and ((batch_idx+1) % self.batch_frequency != 0) : return
+        if (batch_idx == 0) or ((batch_idx+1) % self.batch_frequency != 0) : return
         
         ##  Store the batch index, using self.batch_offset to ensure continuation over epochs
         batch_idx += self.batch_offset
@@ -1355,7 +1367,7 @@ class MetricRecord(Callback) :
         self.values.append(value)
 
         ##  Find std dev on loss using bootstraps if configured
-        values_std = None
+        v11, v89 = None, None
         if self.num_bootstrap > 0 : 
 
             ##  Do bootstraps
@@ -1369,15 +1381,18 @@ class MetricRecord(Callback) :
                 bs_vals.append(np.mean(batch_vals))
 
             ##  Store std dev
-            values_std = np.std(bs_vals)
-            self.values_std.append(values_std)
+            v11, v50, v89 = np.percentile(bs_vals, [11, 50, 89])
+            self.values_11pct.append(v11)
+            self.values_50pct.append(v50)
+            self.values_89pct.append(v89)
 
         ##  Log if configured
         if self.logger :
-            self.logger.log(self.log_lvl, f"Validation loss after {batch_idx} batches is {value}{f' +- {values_std}' if values_std else ''}")
+            flat_label = self.label.replace('\n',' ')
+            self.logger.log(self.log_lvl, f"Metric {flat_label} after {batch_idx} batches is {value:.5}{f' [68% @ {v11:.5} - {v89:.5}]' if v11 else ''}")
 
         ##  Plot if configured
-        if self.plot_frequency > 0 and (len(self.batch_indices) % self.plot_frequency == 0) :
+        if batch_idx > 0 and self.plot_frequency > 0 and ((batch_idx+1) % self.plot_frequency == 0) :
             self.plot(show=True, close=True)
 
     
@@ -1395,6 +1410,20 @@ class MetricRecord(Callback) :
         ##  Set self.batch_offset to the number of batches already processed
         self.batch_offset = epoch_idx * self.num_steps
         self.epoch_starts.append(self.batch_offset)
+    
+    
+    def on_epoch_end(self, epoch_idx:int, logs={}) :
+        """
+        Processing to be run at the end of each epoch.
+        Creates a plot of the loss curve if configured to do so
+        
+        Inputs:
+        
+            >  epoch_idx, int
+               Index of the epoch about to be processed
+        """
+        if self.plot_on_epoch_end : 
+            self.plot(show=True, close=True)
     
     
     def on_train_begin(self, logs=None) :
@@ -1415,13 +1444,13 @@ class MetricRecord(Callback) :
         self.batch_indices = []
         self.epoch_starts  = []
         self.values        = []
-        self.values_std    = []
+        self.values_11pct  = []
+        self.values_89pct  = []
     
     
     def on_train_end(self, logs=None) :
         """
         Processing to be run at the end of training.
-        
         Creates a plot of the loss curve if configured to do so
         """
         if not self.plot_on_train_end : return
@@ -1452,42 +1481,49 @@ class MetricRecord(Callback) :
         """
     
         ##  Create and format figure object
-        fig = plt.figure(figsize=(8, 5))
+        fig = plt.figure(figsize=(8, 4))
         fig.subplots_adjust(hspace=0.05, wspace=0.3)
 
         ##  Create and format upper axes for linear y-axis
         ax1 = fig.add_subplot(2, 1, 1)
         ax1.tick_params(axis="both", which="both", top=True, right=True, direction="in")
         ax1.grid(which="both")
-        ax1.xaxis.set_ticklabels([])
-        ax1.set_ylabel(f"{self.label}\n[linear]", ha="right", fontsize=14, labelpad=20, rotation=0)
+        #ax1.xaxis.set_ticklabels([])
+        ax1.set_yscale(self.yscale)
+        if self.yscale == "log" :
+            ax1.set_ylabel(f"{self.label}\n[log]", ha="right", fontsize=14, labelpad=20, rotation=0)
+        else :
+            ax1.set_ylabel(f"{self.label}\n[linear]", ha="right", fontsize=14, labelpad=20, rotation=0)
+        ax1.set_xlabel("Batch index", va="top", fontsize=14, labelpad=20)
 
         ##  Create and format lower axes for log y-axis
-        ax2 = fig.add_subplot(2, 1, 2)
-        ax2.tick_params(axis="both", which="both", top=True, right=True, direction="in")
-        ax2.set_yscale("log")
-        ax2.grid(which="both")
+        #ax2 = fig.add_subplot(2, 1, 2)
+        #ax2.tick_params(axis="both", which="both", top=True, right=True, direction="in")
+        #ax2.set_yscale("log")
+        #ax2.grid(which="both")
 
-        ax2.set_ylabel(f"{self.label}\n[log]", ha="right", fontsize=14, labelpad=20, rotation=0)
-        ax2.set_xlabel("Batch index", va="top", fontsize=14, labelpad=20)
+        #ax2.set_ylabel(f"{self.label}\n[log]", ha="right", fontsize=14, labelpad=20, rotation=0)
+        #ax2.set_xlabel("Batch index", va="top", fontsize=14, labelpad=20)
 
         ##  Pull data as np arrays
-        x, y, yerr = self.batch_indices, self.values, self.values_std
-        x, y, yerr = np.array(x), np.array(y), np.array(yerr)
+        x, y, y_lo, y_mid, y_hi = self.batch_indices, self.values, self.values_11pct, self.values_50pct, self.values_89pct
+        x, y, y_lo, y_mid, y_hi = np.array(x), np.array(y), np.array(y_lo), np.array(y_mid), np.array(y_hi)
 
         ##  Plot loss curves
-        ax1.plot(x, y, "x-", lw=2, c="darkred")
-        ax2.plot(x, y, "x-", lw=2, c="darkred")
+        ax1.plot(x, y, "x-", lw=2, c="k")
+        #ax2.plot(x, y, "x-", lw=2, c="k")
 
         ##  If we have calculated std then use to plot error band
-        if len(yerr) :
-            ax1.fill_between(x, y-yerr, y+yerr, lw=0, fc="darkred", alpha=0.3)
-            ax2.fill_between(x, y-yerr, y+yerr, lw=0, fc="darkred", alpha=0.3)
+        if len(y_lo) :
+            ax1.fill_between(x, y_lo , y_mid, lw=0, fc="darkblue", alpha=0.3)
+            ax1.fill_between(x, y_mid, y_hi , lw=0, fc="darkred" , alpha=0.3)
+            #ax2.fill_between(x, y_lo , y_mid, lw=0, fc="darkblue", alpha=0.3)
+            #ax2.fill_between(x, y_mid, y_hi , lw=0, fc="darkred" , alpha=0.3)
         
         ##  Plot vertical lines at epoch transitions
         for epoch_start in self.epoch_starts :
             ax1.axvline(epoch_start-0.5, ls="-", lw=2, c="k")
-            ax2.axvline(epoch_start-0.5, ls="-", lw=2, c="k")
+            #ax2.axvline(epoch_start-0.5, ls="-", lw=2, c="k")
 
         ##  Save plot
         if savefig :
