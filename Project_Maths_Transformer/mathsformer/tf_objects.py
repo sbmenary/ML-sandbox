@@ -13,6 +13,7 @@ import logging, math
 
 import numpy      as np
 import tensorflow as tf
+import tensorflow.keras.backend as K
 
 from collections import ChainMap
 
@@ -291,7 +292,10 @@ class AttentionBlock(CustomLayer) :
 
         ##  Execute attention, skip-connection and layer-normalisation
         y = self._mha(query=q, value=v, use_causal_mask=self.use_causal_mask, training=training)
-        if self.skip_connect : y = self._average([q, y])
+        if self.skip_connect : 
+            q_dims, y_dims = q.shape[-1], y.shape[-1]
+            if q_dims != y_dims : raise RuntimeError(f"Cannot apply skip-connection combining tensors of different dimensions {q_dims} and {y_dims}")
+            y = self._average([q, y])
         if self.layer_norm   : y = self._layernorm(y, training=training)
         return y
 
@@ -425,8 +429,7 @@ class DecoderBlock(CustomLayer) :
         else                  : self._self_att_block  = AttentionBlock(name=f"{base_name}_self_attention_block" , ndim_out=ndim_out, ndim_hidden=ndim_hidden_mha, dropout=dropout_mha, skip_connect=skip_connect, layer_norm=layer_norm, dtype=self.dtype, num_heads=num_heads, use_causal_mask=use_causal_mask, self_attention=True)
         if   _cross_att_block : self._cross_att_block = _cross_att_block
         else                  : self._cross_att_block = AttentionBlock(name=f"{base_name}_cross_attention_block", ndim_out=ndim_out, ndim_hidden=ndim_hidden_mha, dropout=dropout_mha, skip_connect=skip_connect, layer_norm=layer_norm, dtype=self.dtype, num_heads=num_heads, use_causal_mask=False, self_attention=False)
-        self._ff_block_1 = FeedForwardBlock(name=f"{base_name}_feedfwd_block_1", ndim_out=ndim_out, ndim_hidden=ndim_hidden_ff, dropout=dropout_ff, skip_connect=skip_connect, layer_norm=layer_norm, dtype=self.dtype, batch_norm=False, activation=activation, num_hidden_layers=num_hidden_layers_ff)
-        self._ff_block_2 = FeedForwardBlock(name=f"{base_name}_feedfwd_block_2", ndim_out=ndim_out, ndim_hidden=ndim_hidden_ff, dropout=dropout_ff, skip_connect=skip_connect, layer_norm=layer_norm, dtype=self.dtype, batch_norm=False, activation=activation, num_hidden_layers=num_hidden_layers_ff)
+        self._ff_block = FeedForwardBlock(name=f"{base_name}_feedfwd_block", ndim_out=ndim_out, ndim_hidden=ndim_hidden_ff, dropout=dropout_ff, skip_connect=skip_connect, layer_norm=layer_norm, dtype=self.dtype, batch_norm=False, activation=activation, num_hidden_layers=num_hidden_layers_ff)
                     
         
     def call(self, x, training=False, mask=None) :
@@ -436,9 +439,8 @@ class DecoderBlock(CustomLayer) :
         seq_dec , seq_enc  = x[0]   , x[1]
         mask_dec, mask_enc = mask[0], mask[1]
         seq_dec = self._self_att_block (seq_dec, training=training)                  # N.B uses internal keras_mask so no mask argument needed
-        seq_dec = self._ff_block_1     (seq_dec, mask=mask_dec, training=training)   
         seq_dec = self._cross_att_block([seq_dec, seq_enc], training=training)       # N.B uses internal keras_mask so no mask argument needed
-        seq_dec = self._ff_block_2     (seq_dec, mask=mask_dec, training=training)   
+        seq_dec = self._ff_block       (seq_dec, mask=mask_dec, training=training)   
         return seq_dec
 
 
@@ -644,7 +646,7 @@ class EncoderBlock(CustomLayer) :
 ##   Enumerate keras layer   ##
 ##===========================##
 ##
-class Enumerate(Layer) :
+class Enumerate(CustomLayer) :
 
     def __init__(self, index_from_zero:bool=True, **kwargs) :
         '''
@@ -722,7 +724,8 @@ class Enumerate(Layer) :
 ##
 class FeedForwardBlock(CustomLayer) :
 
-    def __init__(self, ndim_out:int, ndim_hidden:int, num_hidden_layers:int=1, dropout:float=0, activation='relu', skip_connect:bool=False, layer_norm:bool=False, batch_norm:bool=True, **kwargs) :
+    def __init__(self, ndim_out:int, ndim_hidden:int, num_hidden_layers:int=1, dropout:float=0, activation='relu', activation_out='linear', 
+                 skip_connect:bool=False, layer_norm:bool=False, batch_norm:bool=True, **kwargs) :
         '''
         class FeedForwardBlock
 
@@ -748,6 +751,9 @@ class FeedForwardBlock(CustomLayer) :
             >  activation, str, default='relu'
                Activation function for the hidden layers
 
+            >  activation_out, str, default='linear'
+               Activation function for the output layers
+
             >  skip_connect, bool, default=False
                Whether to apply skip connection between the input and output; only possible when ndim_out is equal to the input size, or
                when they can be broadcast to the same size (warning: check that output size is what you expect!)
@@ -768,6 +774,7 @@ class FeedForwardBlock(CustomLayer) :
         self.num_hidden_layers = num_hidden_layers
         self.dropout           = dropout
         self.activation        = activation
+        self.activation_out    = activation_out
         self.skip_connect      = skip_connect
         self.layer_norm        = layer_norm
         self.batch_norm        = batch_norm
@@ -783,7 +790,10 @@ class FeedForwardBlock(CustomLayer) :
         y = x
         y = self._dense_block(y, training=training)
         y = self._dense_out  (y, training=training)
-        if self.skip_connect : y = self._average   ([x, y], training=training)
+        if self.skip_connect : 
+            x_dims, y_dims = x.shape[-1], y.shape[-1]
+            if x_dims != y_dims : raise RuntimeError(f"Cannot apply skip-connection combining tensors of different dimensions {x_dims} and {y_dims}")
+            y = self._average([x, y], training=training)
         return y
 
 
@@ -807,6 +817,7 @@ class FeedForwardBlock(CustomLayer) :
                 "num_hidden_layers" : self.num_hidden_layers,
                 "dropout"           : self.dropout, 
                 "activation"        : self.activation, 
+                "activation_out"    : self.activation_out, 
                 "skip_connect"      : self.skip_connect,
                 "layer_norm"        : self.layer_norm,
                 "batch_norm"        : self.batch_norm,
@@ -828,7 +839,7 @@ class FeedForwardBlock(CustomLayer) :
             if self.dropout > 0 :
                 dense_block_layers.append(Dropout(self.dropout, dtype=dtype, name=f"{base_name}_dropout_{l_idx+1}"))
         self._dense_block  = Sequential(dense_block_layers, name=f"{base_name}_dense_block")
-        self._dense_out    = Dense     (self.ndim_out, dtype=dtype, name=f"{base_name}_dense_out", activation='linear')
+        self._dense_out    = Dense     (self.ndim_out, dtype=dtype, name=f"{base_name}_dense_out", activation=self.activation_out)
         self._average      = Average   (dtype=dtype, name=f"{base_name}_average") if self.skip_connect else None
 
 
@@ -1359,7 +1370,7 @@ class MetricRecord(Callback) :
         self.batch_indices.append(batch_idx)
         
         ##  Calculate + store the loss
-        x = self.val_input
+        x          = self.val_input
         y, y_pred  = self.val_output, self.model(x, training=False)
         batch_vals = self.func(y=y, y_pred=y_pred).numpy()
         if len(batch_vals.shape) == 2 and batch_vals.shape[-1] == 1 : batch_vals = batch_vals[:,0]
@@ -1445,6 +1456,7 @@ class MetricRecord(Callback) :
         self.epoch_starts  = []
         self.values        = []
         self.values_11pct  = []
+        self.values_50pct  = []
         self.values_89pct  = []
     
     

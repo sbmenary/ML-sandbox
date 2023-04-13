@@ -79,12 +79,12 @@ def create_working_directory(working_dir:str, increment:bool=True, tags:dict=Non
         working_dir = working_dir.replace(f"[{tag}]", str(val).replace(".","p").replace("-","m"))
 
     ##  Iterate until we find a working directory name that doesn't already exist
-    trial_working_dir, version = working_dir, 0
+    trial_working_dir, version = working_dir, 1
     while os.path.exists(trial_working_dir) :
         if not increment : 
             raise RuntimeError(f"Directory {trial_working_dir} already exists and using increment=False")
         version += 1
-        trial_working_dir = f"{trial_working_dir}_{version}"
+        trial_working_dir = f"{working_dir}_v{version}"
         
     ##  Create dir and return its name
     os.mkdir(trial_working_dir)
