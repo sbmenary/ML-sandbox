@@ -883,8 +883,6 @@ class LayerActivationRecord(Callback) :
         self.batch_indices = []
         self.layer_means   = {}
         self.layer_stds    = {}
-        self.batch_offset  = -1
-        self.num_steps     = -1
         self.layers        = []
 
     
@@ -978,6 +976,81 @@ class LayerActivationRecord(Callback) :
             self.layer_stds [layer.name] = []
 
 
+    def plot(self, num_col:int=3, show:bool=True, savefig:str=None, close:bool=True, dpi:int=200) :
+        """
+        Create plot showing the spread of layer activations (mean and std) throughout training
+
+        Inputs:
+        
+            >  num_col, int, default=3
+               Number of axis columns
+
+            >  show, bool, default=True
+               Whether to call plt.show(fig) with the figure created
+
+            >  savefig, str, default=None
+               Optional filename to save the figure to
+
+            >  close, bool, default=True
+               Whether to call plt.close(fig) at the end
+
+            >  dpi, int, default=200
+               Pixels-per-inch when saving to file, for formats that require this
+
+        Returns:
+
+            >  fig, plt.Figure object, the figure created
+        """
+
+        ##  Get names of all layers for which activations have been recorded, in alphabetical order
+        layer_names = [layer_name for layer_name, layer_mean in self.layer_means.items() if len(layer_mean) > 0]
+        layer_names = sorted(layer_names)
+
+        ##  Calculate number of rows needed
+        num_row = math.ceil(len(layer_names) / num_col)
+
+        ##  Create figure object
+        fig = plt.figure(figsize=(4*num_col, 4*num_row))
+        fig.subplots_adjust(hspace=0.3, wspace=0.3)
+
+        ## Iterate over selected layers
+        for layer_idx, layer_name in enumerate(layer_names) :
+
+            ##  Add axis for layer
+            ax  = fig.add_subplot(num_row, num_col, 1+layer_idx)
+            ax.tick_params(which="both", axis="both", direction="in", left=True, top=True, labelsize=8)
+            ax.set_title(layer_name, fontsize=6)
+
+            ##  Pull data from records
+            x  = np.array(self.batch_indices)
+            y  = np.array(self.layer_means[layer_name])
+            ey = np.array(self.layer_stds [layer_name])
+
+            ##  Plot line tracking the layer mean activation, and shade region between std devs
+            ax.plot(x, y, "-", lw=3, c='k')
+            ax.fill_between(x, y-ey, y+ey, fc="darkblue", alpha=0.2, lw=0)
+
+            ##  Draw text label on the first axis only
+            if layer_idx == 0 :
+                ax.text(0, 1.2, "Layer activations vs batch index", weight="bold", ha="left", va="bottom", fontsize=16, transform=ax.transAxes)
+
+
+        ##  Save figure
+        if savefig :
+            fig.savefig(savefig, bbox_inches="tight", dpi=dpi)
+
+        ##  Show figure
+        if show :
+            plt.show(fig)
+
+        ##  Close figure
+        if close :
+            plt.close(fig)
+
+        ##  Return figure
+        return fig
+
+
 
 ##=======================================##
 ##   LayerWeightsRecord keras callback   ##
@@ -994,7 +1067,7 @@ class LayerWeightsRecord(Callback) :
         Inputs:
             
             >  batch_frequency, int
-               Batch frequency with which to measure layer activations
+               Batch frequency with which to measure layer weights
                
             >  recursive, bool, default=False
                Whether to recursively search for all nested sublayers
@@ -1115,7 +1188,7 @@ class LayerWeightsRecord(Callback) :
             >  fig, plt.Figure object, the figure created
         """
 
-        ##  Get names of all layers for which weights have been recorded, an alphabetical order
+        ##  Get names of all layers for which weights have been recorded, in alphabetical order
         layer_names = [layer_name for layer_name, layer_mean in self.layer_means.items() if len(layer_mean) > 0]
         layer_names = sorted(layer_names)
 
@@ -1145,21 +1218,23 @@ class LayerWeightsRecord(Callback) :
 
             ##  Draw text label on the first axis only
             if layer_idx == 0 :
-                ax.text(0, 1.2, "Layer weights vs batch index", weight="bold", ha="left", 
-                        va="bottom", fontsize=16, transform=ax.transAxes)
+                ax.text(0, 1.2, "Layer weights vs batch index", weight="bold", ha="left", va="bottom", fontsize=16, transform=ax.transAxes)
 
 
-        ##  Save plot
+        ##  Save figure
         if savefig :
             fig.savefig(savefig, bbox_inches="tight", dpi=dpi)
 
-        ##  Show plot
+        ##  Show figure
         if show :
             plt.show(fig)
 
-        ##  Close plot
+        ##  Close figure
         if close :
             plt.close(fig)
+
+        ##  Return figure
+        return fig
         
 
 
@@ -1205,7 +1280,7 @@ class LearnableMixture(CustomLayer) :
         '''
         Create a linear combination of several inputs with learnable coefficients.
         '''
-        w = tf.keras.activations.softmax(self._weights)
+        w = tf.nn.softmax(self._weights)
         y = [tf.math.scalar_mul(w[x_idx], xp) for (x_idx, xp) in enumerate(x)]
         return self._add(y)
 
@@ -1493,8 +1568,8 @@ class MetricRecord(Callback) :
         """
     
         ##  Create and format figure object
-        fig = plt.figure(figsize=(8, 4))
-        fig.subplots_adjust(hspace=0.05, wspace=0.3)
+        fig = plt.figure(figsize=(8, 4.5))
+        fig.subplots_adjust(hspace=0, wspace=0)
 
         ##  Create and format upper axes for linear y-axis
         ax1 = fig.add_subplot(2, 1, 1)

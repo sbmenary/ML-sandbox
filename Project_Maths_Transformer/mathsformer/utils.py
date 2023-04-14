@@ -19,22 +19,26 @@ import tensorflow as tf
 ##===============##
 
 class CustomLogLevel(enum.IntEnum) :
-	"""
-	Enumeration for cutom log-levels that live between logging.DEBUG=10 and logging.INFO=20.
-	This allows us to enumerate package-specific debug-levels without falling all the way back to the system DEBUG level.
-	"""
-	CRITICAL          = 50
-	ERROR             = 40
-	WARNING           = 30
-	INFO              = 20
-	DEBUG_VERY_LOW    = 19
-	DEBUG_LOW         = 18
-	DEBUG_MEDIUM_LOW  = 16
-	DEBUG_MEDIUM      = 15
-	DEBUG_MEDIUM_HIGH = 14
-	DEBUG_HIGH        = 12
-	DEBUG_VERY_HIGH   = 11
-	DEBUG             = 10
+    """
+    Enumeration for custom DEBUG-like log levels.
+    DEBUG_MEDIUM is equivalent to logging.DEBUG = 10
+    DEBUG_MEDIUM_LOW  - DEBUG_EXTREMELY_LOW  enumerate levels between logging.DEBUG and logging.INFO, for "light-debugging"
+    DEBUG_MEDIUM_HIGH - DEBUG_EXTREMELY_HIGH enumerate levels below logging.DEBUG, for "heavy-debugging"
+    """
+    CRITICAL             = 50
+    ERROR                = 40
+    WARNING              = 30
+    INFO                 = 20
+    DEBUG                = 10
+    DEBUG_EXTREMELY_LOW  = 18
+    DEBUG_VERY_LOW       = 16
+    DEBUG_LOW            = 14
+    DEBUG_MEDIUM_LOW     = 12
+    DEBUG_MEDIUM         = 10
+    DEBUG_MEDIUM_HIGH    = 8
+    DEBUG_HIGH           = 6
+    DEBUG_VERY_HIGH      = 4
+    DEBUG_EXTREMELY_HIGH = 2
 
 
 
@@ -170,8 +174,8 @@ def initialise_logging(name:str=None, iostream=sys.stdout, fname:str=None, log_l
     
     Inputs:
 
-    	>  name, str, default=None
-    	   Name of the logger to be configured
+        >  name, str, default=None
+           Name of the logger to be configured
     
         >  iostream, streamable object, default=sys.stdout
            Output stream, if None then do not create an iostream
@@ -220,7 +224,8 @@ def initialise_logging(name:str=None, iostream=sys.stdout, fname:str=None, log_l
 
 
 
-def initialise_program(program_description:str, working_dir:str, global_config:dict, logger_name:str="mathsformer", log_lvl_iostream:int=logging.INFO, log_lvl_fstream:int=logging.DEBUG) :
+def initialise_program(program_description:str, working_dir:str, global_config:dict, base_seed:int=-1, 
+                       logger_name:str="mathsformer", log_lvl_iostream:int=logging.INFO, log_lvl_fstream:int=logging.DEBUG) :
     """
     Groups many repeated program initialisation routines together. Steps are:
     1. Create a new working directory at working_dir, using global_config to resolve any name tags
@@ -231,14 +236,17 @@ def initialise_program(program_description:str, working_dir:str, global_config:d
     
     Inputs:
 
-    	>  program_description, str
-    	   Description of the program being run
+        >  program_description, str
+           Description of the program being run
     
         >  working_dir, str
            Name of working directory to create
     
         >  global_config, dict
            Dictionary of config values
+
+        >  base_seed, int, default=-1
+           Random seed, if -1 then use system time
 
         >  logger_name, str, default='mathsformer'
            Name of the logger to be configured
@@ -348,10 +356,10 @@ def log_versions(logger, packages:list=[], pull_from_sys:bool=False, pull_submod
     """
     ##  If pull_from_sys then add modules from sys.modules
     if pull_from_sys :
-    	packages = [(k,v) for k,v in sys.modules.items() if hasattr(v, "__version__") and (pull_submodules or "." not in lstrip_multiple(k, [".","/"]))]
-    	packages = sorted(packages, key=lambda p:p[0])
-    	packages = [v for k,v in packages]
-    	return log_versions(logger, packages)
+        packages = [(k,v) for k,v in sys.modules.items() if hasattr(v, "__version__") and (pull_submodules or "." not in lstrip_multiple(k, [".","/"]))]
+        packages = sorted(packages, key=lambda p:p[0])
+        packages = [v for k,v in packages]
+        return log_versions(logger, packages)
 
     ##  Create nicely-formatted strings
     pkg_names    = ["Python"   ] + [str(pkg.__name__   ) if hasattr(pkg, "__name__"   ) else "unknown" for pkg in packages]
@@ -370,36 +378,36 @@ def log_versions(logger, packages:list=[], pull_from_sys:bool=False, pull_submod
 
 
 def lstrip_multiple(s:str, chars:list) :
-	"""
-	Strip many characters from the LHS of string s
+    """
+    Strip many characters from the LHS of string s
 
-	Inputs:
+    Inputs:
 
-		>  s, str
-		   String to be stripped
+        >  s, str
+           String to be stripped
 
-		>  chars, list
-		   Characters to be stripped
-	"""
-	while len(s) > 0 and s[0] in chars :
-		s = s[1:]
-	return s
+        >  chars, list
+           Characters to be stripped
+    """
+    while len(s) > 0 and s[0] in chars :
+        s = s[1:]
+    return s
 
 
 
 def rstrip_multiple(s:str, chars:list) :
-	"""
-	Strip many characters from the RHS of string s
+    """
+    Strip many characters from the RHS of string s
 
-	Inputs:
+    Inputs:
 
-		>  s, str
-		   String to be stripped
+        >  s, str
+           String to be stripped
 
-		>  chars, list
-		   Characters to be stripped
-	"""
-	return lstrip_multiple(s[::-1], chars=chars)[::-1]
+        >  chars, list
+           Characters to be stripped
+    """
+    return lstrip_multiple(s[::-1], chars=chars)[::-1]
 
 
 
@@ -408,17 +416,17 @@ def summarise_dict(dict_or_obj, base_str:str="", global_summary_list:list=[], lv
 
     Inputs:
 
-    	>  dict_or_obj, dict or printable object
-    	   Dictionary to be recursively iterated, or object to be printed
+        >  dict_or_obj, dict or printable object
+           Dictionary to be recursively iterated, or object to be printed
 
-    	>  base_str, str, default=''
-		   String summarising the higher-level namespaces in which the current object is nested
+        >  base_str, str, default=''
+           String summarising the higher-level namespaces in which the current object is nested
 
-		>  global_summary_list, list, default=[]
-		   List containing strings of all objects in the dictionary that have been created so far, to be appended with current object
+        >  global_summary_list, list, default=[]
+           List containing strings of all objects in the dictionary that have been created so far, to be appended with current object
 
-		>  lvl_separator, str, default=">"
-		   String use to represent passing to a lower level of the dictionary
+        >  lvl_separator, str, default=">"
+           String use to represent passing to a lower level of the dictionary
     """
 
     ##  If we were given a dictionary then iterate and recursively call this function on all elements

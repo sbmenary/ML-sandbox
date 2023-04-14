@@ -15,7 +15,7 @@ from tensorflow.keras.models     import Model
 from tensorflow.keras.optimizers import Adam
 
 from .tf_objects import (masked_accuracy, masked_sparse_categorical_crossentropy, AttentionBlock, DecoderBlock, EncoderBlock, 
-                         Enumerate, FeedForwardBlock, PositionalEncoding)
+                         Enumerate, FeedForwardBlock, LearnableMixture, PositionalEncoding)
 
 
 ##=============##
@@ -67,7 +67,8 @@ def create_text_to_text_model(vocab_length:int,
         >  pos_enc_max_period, float, default=10000: Upper limit of the geometric series of wave-periods used for positional encoding
 
         >  ndim_embedding, int, default=64       : Size of the token embeddings
-        >  comb_type     , str, default="average": Method for combining the token embeddings and position encodings, options are: ["add", "sum", "average", "mean", "concat", "concatenate"]
+        >  comb_type     , str, default="average": Method for combining the token embeddings and position encodings
+                                                   Options are: ["add", "sum", "average", "mean", "concat", "concatenate", "mixture"]
 
         >  num_pre_layers_encoder  , int , default=-1  : Number of layers in the pre-encoder feed-forward block (if <0 then skip entirely)
         >  ndim_pre_layers_encoder , int , default=512 : Number of neurons per-layer in the pre-encoder feed-forward block 
@@ -123,7 +124,7 @@ def create_text_to_text_model(vocab_length:int,
     ##  -  if comb_type will lead to broadcasting with embeddings later on, then we don't need to repeat the enumerations
     ##     along the batch axis and can use minimal_dims=True for an ouput of [1, S] instead. This saves us memory here
     ##     and reduces the number of operations in the positional encoding step by a factor of B
-    minimal_dims = comb_type.lower() in ["add", "sum", "average", "mean"]
+    minimal_dims = comb_type.lower() in ["add", "sum", "average", "mean", "mixture"]
     x_pos_enc    = Enumerate(name=f"{name}_encoder_enumerate", dtype=dtype)(x_in_enc, minimal_dims=minimal_dims)
     x_pos_dec    = Enumerate(name=f"{name}_decoder_enumerate", dtype=dtype)(x_in_dec, minimal_dims=minimal_dims)
     
@@ -144,7 +145,7 @@ def create_text_to_text_model(vocab_length:int,
     ##==============================================================================================##
     ##===  Combine embeddings end pos enc - Output shape [B, S, N] where N depends on comb_type  ===##
     ##==============================================================================================##
-    allowed_comb_types = ["add", "sum", "average", "mean", "concat", "concatenate"]
+    allowed_comb_types = ["add", "sum", "average", "mean", "concat", "concatenate", "mixture"]
     match comb_type.lower() :
         case "add" | "sum" :
             x_enc = Add(name=f"{name}_encoder_emb_and_pos", dtype=dtype)([x_embed_enc, x_pos_enc])
@@ -155,6 +156,9 @@ def create_text_to_text_model(vocab_length:int,
         case "concat" | "concatenate" :
             x_enc = Concatenate(name=f"{name}_encoder_emb_and_pos", dtype=dtype)([x_embed_enc, x_pos_enc])
             x_dec = Concatenate(name=f"{name}_decoder_emb_and_pos", dtype=dtype)([x_embed_dec, x_pos_dec])
+        case "mixture" :
+            x_enc = LearnableMixture(name=f"{name}_encoder_emb_and_pos", dtype=dtype)([x_embed_enc, x_pos_enc])
+            x_dec = LearnableMixture(name=f"{name}_decoder_emb_and_pos", dtype=dtype)([x_embed_dec, x_pos_dec])
         case _ :
             raise RuntimeError(f"comb_type '{comb_type}' not recognised, recognised keywords are {allowed_comb_types}")
 
