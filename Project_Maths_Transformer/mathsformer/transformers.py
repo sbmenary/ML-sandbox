@@ -6,15 +6,16 @@
 Definition of maths transformer objects.
 """
 
+from __future__ import annotations
+
 import numpy      as np
 import tensorflow as tf
 
-from tensorflow.keras.layers     import Average, Concatenate, Dense, Embedding, Input, Masking
-from tensorflow.keras.losses     import SparseCategoricalCrossentropy
+from tensorflow.keras.layers     import Add, Average, Concatenate, Embedding, Input
 from tensorflow.keras.models     import Model
 from tensorflow.keras.optimizers import Adam
 
-from .tf_objects import (masked_accuracy, masked_sparse_categorical_crossentropy, AttentionBlock, DecoderBlock, EncoderBlock, 
+from .tf_objects import (masked_accuracy, masked_sparse_categorical_crossentropy, DecoderBlock, EncoderBlock, 
                          Enumerate, FeedForwardBlock, LearnableMixture, PositionalEncoding)
 
 
@@ -29,8 +30,9 @@ def create_text_to_text_model(vocab_length:int,
                               dtype_in            = tf.int32, 
                               dtype               = tf.float32, 
                               dropout:float       = 0.1, 
+                              jit_compile:bool    = None,
                               optimizer           = Adam,
-                              optimizer_args:dict = {'learning_rate':0.001},
+                              optimizer_args:dict = None,
                               pos_enc_num_freqs:int       = 32, pos_enc_min_period:float     = 5, pos_enc_max_period:float = 10000,
                               ndim_embedding:int          = 64, comb_type:str                = "average",
                               num_pre_layers_encoder:int  = 0 , ndim_pre_layers_encoder:int  = 512, skip_connect_pre_encoder:bool = True,
@@ -97,6 +99,9 @@ def create_text_to_text_model(vocab_length:int,
         >  num_post_layers_decoder , int, default=3  : Number of layers in the post-decoder feed-forward block 
         >  ndim_post_layers_decoder, int, default=512: Number of neurons per-layer in the post-decoder feed-forward block 
     """
+    ##  Resolve mutable default args
+    if optimizer_args is None :
+        optimizer_args = {'learning_rate': 0.001}
     
     ##=============================================##
     ##===   Input layer - Output shape [B, S]   ===##
@@ -233,9 +238,10 @@ def create_text_to_text_model(vocab_length:int,
     
     ##  Compile model with sparse categorical crossentropy loss and accuracy metric
     if do_compile :
-        model.compile(loss      = masked_sparse_categorical_crossentropy, 
-                      optimizer = optimizer(**optimizer_args), 
-                      metrics   = [masked_accuracy])
+        model.compile(loss        = masked_sparse_categorical_crossentropy, 
+                      optimizer   = optimizer(**optimizer_args), 
+                      metrics     = [masked_accuracy],
+                      jit_compile = jit_compile)
     
     ##  Return model
     return model
@@ -291,7 +297,7 @@ class Transformer_Text_to_Text :
         ##  Check max tokens is long enough to contain a full sequence
         min_sequence_length = len(self.token_transform.seq_start_char) + len(self.token_transform.seq_end_char)
         if max_tokens > 0 and max_tokens < min_sequence_length :
-            raise ArgumentError(f"max_tokens must have a minimum length of {min_sequence_length}, {max_tokens} provided")
+            raise ValueError(f"max_tokens must have a minimum length of {min_sequence_length}, {max_tokens} provided")
             
         ##  Check that a valid token selection strategy was selected
         match strategy.lower() :
@@ -357,7 +363,7 @@ class Transformer_Text_to_Text :
             >  max_tokens, int, default=-1
                Maximum tokens in sequence
                
-            >  device, str, default="CPU"
+            >  device, str, default="CPU"ß
                Device to run tensorflow on
         """
         

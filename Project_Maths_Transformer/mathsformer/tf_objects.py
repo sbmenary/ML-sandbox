@@ -15,8 +15,6 @@ import numpy      as np
 import tensorflow as tf
 import tensorflow.keras.backend as K
 
-from collections import ChainMap
-
 from matplotlib import pyplot as plt
 
 from tensorflow.keras.callbacks import Callback
@@ -71,7 +69,7 @@ def create_custom_objects_dict(*layers, model:Model=None) :
 
 
 
-def get_nested_sublayers(layer, layers=[]) :
+def get_nested_sublayers(layer) :
     """
     Return a list of all the nested sublayers found within layer.
     
@@ -84,6 +82,9 @@ def get_nested_sublayers(layer, layers=[]) :
         >  layer, any type but often keras.Model or keras.Layer
            An object containing nested sublayers / submodels to be searched for.
     """
+
+    ##  Initialise list of layers
+    layers = []
         
     ##  Check for model.layers
     if hasattr(layer, "layers") and type(layer.layers) is list :
@@ -91,14 +92,14 @@ def get_nested_sublayers(layer, layers=[]) :
             if not (isinstance(sublayer, Layer) or isinstance(sublayer, Model)) : continue
             if sublayer.name in [l.name for l in layers] : continue
             layers.append(sublayer)
-            get_nested_sublayers(sublayer, layers)
+            layers += get_nested_sublayers(sublayer)
     
     ##  Check for other attributes that are instances of Layer or Model
     for attr_name, attr in layer.__dict__.items() :
         if not (isinstance(attr, Layer) or isinstance(attr, Model)) : continue
         if attr.name in [l.name for l in layers] : continue
         layers.append(attr)
-        get_nested_sublayers(attr, layers)
+        layers += get_nested_sublayers(attr)
 
     ##  Return container
     return layers
@@ -207,6 +208,144 @@ class CustomLayer(Layer) :
         list_of_sets = [l.get_custom_objects() if hasattr(l,"get_custom_objects") else set() for l in cls.get_custom_layer_types()]
         return set([cls,]).union(*list_of_sets)
 
+
+
+##=========================================##
+##   AdaptiveLearningRate keras callback   ##
+##=========================================##
+##
+class AdaptiveLearningRate(Callback) :
+    
+    def __init__(self, decay_factor:float, patience:int=1, monitor:str=None, mode:str='min', variable=None, logger=None, log_lvl:int=logging.DEBUG) :
+        """
+        class AdaptiveLearningRate
+        
+        Reduces learning rate when a given metric stops improving during training
+        
+        Inputs:
+        
+            >  decay_factor, float
+               Update factor for the target variable
+               
+            >  patience, int, default=1
+               Number of epochs we wait for the metric to improve before updating
+               
+            >  monitor, str, None
+               Which metric to monitor, if None then fall back to first metric in model.metric_names
+               
+            >  mode, str, default='min'
+               Direction in which we want the metric to improve, choose from ['min', 'max']
+               
+            >  variable, tf.Variable, default=None
+               Tensorflow variable to update, if None then fall back to model.optimizer.learning_rate
+               
+            >  logger, logging.Logger, default=None
+               If provided then use to log state changes such as variable updates or fall backs
+               
+            >  log_lvl, int, default=DEBUG
+               Log-level for messages to logger.log if provided
+        """
+        ##  Check that a valid mode was provided
+        mode = mode.lower()
+        if mode not in ["min", "max"] :
+            raise ValueError(f"mode must be 'min' or 'max', but '{mode}' provided")
+            
+        ##  Initialise constant variables
+        self.decay_factor = decay_factor
+        self.patience     = patience
+        self.monitor      = monitor
+        self.mode         = mode
+        self.variable     = variable
+        self.logger       = logger
+        self.log_lvl      = log_lvl
+        
+        
+    def on_epoch_end(self, epoch_idx:int, logs:dict) :
+        """
+        Retrieve latest metric value from logs, use to update best value, and update variable if needed.
+        Method is run automatically at the end of an epoch during training.
+        
+        Inputs:
+        
+            >  epoch_idx, int
+               Index of just-completed epoch
+        
+            >  logs, dict
+               Dictionary of all metric names:values evaluated over the epoch
+        """
+        ##  Get latest value
+        monitor_val = logs[self.monitor]
+        
+        ##  Update run variables
+        if np.isnan(self.best_val) or (self.mode == 'min' and  monitor_val < self.best_val) or (self.mode == 'max' and  monitor_val > self.best_val) :
+            self.best_val = monitor_val
+            self.num_itr  = 0
+        else :
+            self.num_itr += 1
+            
+        ##  Update learning rate
+        if self.num_itr == self.patience :
+            self.update()
+            self.reset_run_variables()
+            self.epoch_update_indcs.append(epoch_idx)
+        
+        
+    def on_train_begin(self, logs:dict) :
+        """
+        Initialise state variables:
+            >  self.variable, retrieved from model if not already provided
+            >  self.monitor, retrieved from model if not already provided
+            >  run variables (self.best_val, self.num_itr, self.epoch_update_indcs)
+        Method is run automatically at the start of training.
+        
+        Inputs:
+        
+            >  logs:dict
+               Empty dictionary of logs
+        """
+        
+        ##  If no variable provided then fall back to model.optimizer.learning_rate
+        if not self.variable :
+            self.variable = self.model.optimizer.learning_rate
+            if self.logger :
+                self.logger.log(self.log_lvl, f"Setting variable to {self.variable.name}")
+            
+        ##  If no metric provided then fall back to self.model.metric_names[0]
+        if not self.monitor :
+            self.monitor = self.model.metric_names[0]
+            if self.logger :
+                self.logger.log(self.log_lvl, f"Setting monitor to {self.monitor}")
+                
+        ##  Initialise run variables
+        self.reset_run_variables()
+        
+    
+    def reset_run_variables(self) :
+        """
+        Reset run variables 
+          >  self.best_val = np.nan
+          >  self.num_itr = 0
+          >  self.epoch_update_indcs = []
+        """
+        self.best_val = np.nan
+        self.num_itr  = 0
+        self.epoch_update_indcs = []
+                
+        
+    def update(self) :
+        """
+        Update the variable by a factor of self.decay_factor
+        """
+        ##  Derive new values
+        current_value = self.variable.value()
+        new_value     = self.decay_factor * current_value
+        
+        ##  Log
+        if self.logger :
+            self.logger.log(self.log_lvl, f"Updating variable {self.variable.name} from {current_value.numpy()} to {new_value.numpy()}")
+        
+        ##  Assign new value
+        self.variable.assign(new_value)
 
 
 ##================================##
@@ -912,7 +1051,7 @@ class LayerActivationRecord(Callback) :
         return config
         
         
-    def on_batch_end(self, batch_idx:int, logs=None) :
+    def on_batch_end(self, batch_idx:int, logs:dict=None) :
         """
         Processing to be run at the end of each batch.
         With the given batch frequency, we pass self.val_input through the model and measure the layer activations.
@@ -943,7 +1082,7 @@ class LayerActivationRecord(Callback) :
             self.layer_stds [layer.name].append(np.std (layer_out))
     
     
-    def on_epoch_begin(self, epoch_idx:int, logs=None) :
+    def on_epoch_begin(self, epoch_idx:int, logs:dict=None) :
         """
         Processing to be run at the start of each epoch.
         Sets self.batch_offset equal to the number of batches already processed.
@@ -958,7 +1097,7 @@ class LayerActivationRecord(Callback) :
         self.batch_offset = epoch_idx * self.num_steps
     
     
-    def on_train_begin(self, logs=None) :
+    def on_train_begin(self, logs:dict=None) :
         """
         Processing to be run at the start of training.
         
@@ -1100,7 +1239,7 @@ class LayerWeightsRecord(Callback) :
         return config
         
         
-    def on_batch_end(self, batch_idx:int, logs=None) :
+    def on_batch_end(self, batch_idx:int, logs:dict=None) :
         """
         Processing to be run at the end of each batch.
         With the given batch frequency, access the current weights for each layer, and record the mean & std dev
@@ -1122,11 +1261,11 @@ class LayerWeightsRecord(Callback) :
             weights = layer.get_weights()
             if len(weights) == 0 : continue
             weights = np.concatenate([w.flatten() for w in weights])
-            self.layer_means[layer.name].append(np.mean(weights))
-            self.layer_stds [layer.name].append(np.std (weights))
+            self.layer_means[id(layer)].append(np.mean(weights))
+            self.layer_stds [id(layer)].append(np.std (weights))
     
     
-    def on_epoch_begin(self, epoch_idx:int, logs=None) :
+    def on_epoch_begin(self, epoch_idx:int, logs:dict=None) :
         """
         Processing to be run at the start of each epoch.
         Sets self.batch_offset equal to the number of batches already processed.
@@ -1141,7 +1280,7 @@ class LayerWeightsRecord(Callback) :
         self.batch_offset = epoch_idx * self.num_steps
     
     
-    def on_train_begin(self, logs=None) :
+    def on_train_begin(self, logs:dict=None) :
         """
         Processing to be run at the start of training.
         
@@ -1158,8 +1297,8 @@ class LayerWeightsRecord(Callback) :
         ##  Initialise containers
         self.batch_indices = []
         for layer in self.layers :
-            self.layer_means[layer.name] = []
-            self.layer_stds [layer.name] = []
+            self.layer_means[id(layer)] = []
+            self.layer_stds [id(layer)] = []
 
 
     def plot(self, num_col:int=3, show:bool=True, savefig:str=None, close:bool=True, dpi:int=200) :
@@ -1188,19 +1327,24 @@ class LayerWeightsRecord(Callback) :
             >  fig, plt.Figure object, the figure created
         """
 
-        ##  Get names of all layers for which weights have been recorded, in alphabetical order
-        layer_names = [layer_name for layer_name, layer_mean in self.layer_means.items() if len(layer_mean) > 0]
-        layer_names = sorted(layer_names)
+        ##  Get names and IDs of all layers for which weights have been recorded
+        layer_names, layer_ids = [], []
+        for layer in self.layers :
+            layer_id, layer_name = id(layer), layer.name
+            layer_mean = self.layer_means[layer_id]
+            if not len(layer_mean) : continue
+            layer_names.append(layer_name)
+            layer_ids  .append(layer_id  )
 
         ##  Calculate number of rows needed
-        num_row = math.ceil(len(layer_names) / num_col)
+        num_row = math.ceil(len(layer_ids) / num_col)
 
         ##  Create figure object
         fig = plt.figure(figsize=(4*num_col, 4*num_row))
         fig.subplots_adjust(hspace=0.3, wspace=0.3)
 
         ## Iterate over selected layers
-        for layer_idx, layer_name in enumerate(layer_names) :
+        for layer_idx, (layer_id, layer_name) in enumerate(zip(layer_ids, layer_names)) :
 
             ##  Add axis for layer
             ax  = fig.add_subplot(num_row, num_col, 1+layer_idx)
@@ -1209,8 +1353,8 @@ class LayerWeightsRecord(Callback) :
 
             ##  Pull data from records
             x  = np.array(self.batch_indices)
-            y  = np.array(self.layer_means[layer_name])
-            ey = np.array(self.layer_stds [layer_name])
+            y  = np.array(self.layer_means[layer_id])
+            ey = np.array(self.layer_stds [layer_id])
 
             ##  Plot line tracking the layer mean weight, and shade region between std devs
             ax.plot(x, y, "-", lw=3, c='k')
@@ -1322,7 +1466,7 @@ class LoggerCallback(Callback) :
         self.loglvl = loglvl
     
     
-    def on_epoch_end(self, epoch_idx:int, logs={}) :
+    def on_epoch_end(self, epoch_idx:int, logs:dict=None) :
         """
         Processing to be run at the end of each epoch.
         Prints contents of log dictionary to logger.
@@ -1425,7 +1569,7 @@ class MetricRecord(Callback) :
             self.bootstrap_indices = np.random.choice(num_data, size=(num_bootstrap, num_data))
 
         
-    def on_batch_end(self, batch_idx:int, logs=None) :
+    def on_batch_end(self, batch_idx:int, logs:dict=None) :
         """
         Processing to be run at the end of each batch.
         With the given batch frequency, we pass self.val_input through the model and measure the loss.
@@ -1482,7 +1626,7 @@ class MetricRecord(Callback) :
             self.plot(show=True, close=True)
 
     
-    def on_epoch_begin(self, epoch_idx:int, logs=None) :
+    def on_epoch_begin(self, epoch_idx:int, logs:dict=None) :
         """
         Processing to be run at the start of each epoch.
         Sets self.batch_offset equal to the number of batches already processed.
@@ -1498,7 +1642,7 @@ class MetricRecord(Callback) :
         self.epoch_starts.append(self.batch_offset)
     
     
-    def on_epoch_end(self, epoch_idx:int, logs={}) :
+    def on_epoch_end(self, epoch_idx:int, logs:dict=None) :
         """
         Processing to be run at the end of each epoch.
         Creates a plot of the loss curve if configured to do so
@@ -1512,7 +1656,7 @@ class MetricRecord(Callback) :
             self.plot(show=True, close=True)
     
     
-    def on_train_begin(self, logs=None) :
+    def on_train_begin(self, logs:dict=None) :
         """
         Processing to be run at the start of training.
         
@@ -1535,7 +1679,7 @@ class MetricRecord(Callback) :
         self.values_89pct  = []
     
     
-    def on_train_end(self, logs=None) :
+    def on_train_end(self, logs:dict=None) :
         """
         Processing to be run at the end of training.
         Creates a plot of the loss curve if configured to do so

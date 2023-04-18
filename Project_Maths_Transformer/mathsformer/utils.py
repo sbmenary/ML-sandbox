@@ -6,6 +6,8 @@
 Definition of utility methods.
 """
 
+from __future__ import annotations
+
 import __main__
 import datetime, enum, logging, os, random, sys, time
 
@@ -14,9 +16,17 @@ import tensorflow as tf
 
 
 
-##===============##
-##   Constants   ##
-##===============##
+##=============##
+##   Globals   ##
+##=============##
+
+##  Module logger
+logger = logging.getLogger(__name__)
+
+
+##===============================##
+##   CustomLogLevel enum class   ##
+##===============================##
 
 class CustomLogLevel(enum.IntEnum) :
     """
@@ -191,47 +201,47 @@ def initialise_logging(name:str=None, iostream=sys.stdout, fname:str=None, log_l
            
     Returns:
     
-        >  logger, Logger: global logger with our output streams
+        >  named_logger, Logger: named logger with our output streams
     """
     
     ##  Get root logger
-    logger = logging.getLogger(name)
+    named_logger = logging.getLogger(name)
 
     ##  Create stream to output log messages, default is sys.stdout
     if type(iostream) != type(None) :
         io_handler = logging.StreamHandler(sys.stdout)
         io_handler.setFormatter(logging.Formatter("%(levelname)7s %(funcName)s: %(message)s"))
         io_handler.setLevel(log_lvl_iostream)
-        logger.addHandler(io_handler)
+        named_logger.addHandler(io_handler)
 
     ##  Create stream to output log messages to file
     if fname :
         f_handler = logging.FileHandler(fname)
         f_handler.setFormatter(logging.Formatter("%(levelname)7s %(asctime)s %(filename)s %(funcName)s: %(message)s", "%Y-%m-%d %H:%M:%S"))
         f_handler.setLevel(log_lvl_fstream)
-        logger.addHandler(f_handler)
+        named_logger.addHandler(f_handler)
 
     ##  Set root logger level
-    handler_lvls = [h.level for h in logger.handlers]
+    handler_lvls = [h.level for h in named_logger.handlers]
     if len(handler_lvls) > 0 :
-        logger.setLevel(min(handler_lvls))
+        named_logger.setLevel(min(handler_lvls))
     
     ##  Log start time 
-    logger.info(f"Begin logging on {datetime.datetime.today().strftime('%Y-%m-%d')} at {datetime.datetime.today().strftime('%H:%M:%S')}")
+    named_logger.info(f"Begin logging on {datetime.datetime.today().strftime('%Y-%m-%d')} at {datetime.datetime.today().strftime('%H:%M:%S')}")
     
     ##  Return global logger
-    return logger
+    return named_logger
 
 
 
-def initialise_program(program_description:str, working_dir:str, global_config:dict, base_seed:int=-1, 
-                       logger_name:str="mathsformer", log_lvl_iostream:int=logging.INFO, log_lvl_fstream:int=logging.DEBUG) :
+def initialise_program(program_description:str, working_dir:str, cfg:dict, base_seed:int=-1, logger_name:str="mathsformer", 
+	                   log_lvl_iostream:int=logging.INFO, log_lvl_fstream:int=logging.DEBUG) :
     """
     Groups many repeated program initialisation routines together. Steps are:
-    1. Create a new working directory at working_dir, using global_config to resolve any name tags
+    1. Create a new working directory at working_dir, using cfg['global'] to resolve any name tags
     2. Create a new logger object without one output stream to stdout, and another to a file in working_dir
     3. Log versions of all compatible modules stored in sys.modules
-    4. Log config values stored in global_config
+    4. Log config values stored in cfg
     5. Initialise random seeds of python random, numpy and tensorflow for reproducibility
     
     Inputs:
@@ -242,7 +252,7 @@ def initialise_program(program_description:str, working_dir:str, global_config:d
         >  working_dir, str
            Name of working directory to create
     
-        >  global_config, dict
+        >  cfg, dict
            Dictionary of config values
 
         >  base_seed, int, default=-1
@@ -267,7 +277,7 @@ def initialise_program(program_description:str, working_dir:str, global_config:d
     """
     
     ##  Create working directory
-    working_dir = create_working_directory(working_dir, tags=global_config)
+    working_dir = create_working_directory(working_dir, tags=cfg["global"])
     print(fancy_message(f"Working directory created at {working_dir}"))
     
     ##  Start logging to stdout and to a file stream in working directory
@@ -282,11 +292,11 @@ def initialise_program(program_description:str, working_dir:str, global_config:d
     log_versions(logger, pull_from_sys=True, pull_submodules=True)
     
     ##  Log config values
-    for config_str in summarise_dict(global_config) :
-        logger.info(f"Registered global config value {config_str}")
+    for config_str in summarise_dict(cfg, lvl_separator=' > ') :
+        logger.info(f"Registered config value {config_str}")
         
     ##  Initialise random seeds for reproducibility
-    base_seed = global_config.get("base_seed", -1)
+    base_seed = cfg["global"].get("base_seed", -1)
     base_seed, np_seed, tf_seed = initialise_random_seeds(base_seed) 
     logger.info(f"Python random seed set: {base_seed}")
     logger.info(f"Numpy random seed set: {np_seed}")
@@ -336,7 +346,7 @@ def initialise_random_seeds(base_seed:int=-1) :
 
 
 
-def log_versions(logger, packages:list=[], pull_from_sys:bool=False, pull_submodules:bool=False) :
+def log_versions(logger, packages:list=None, pull_from_sys:bool=False, pull_submodules:bool=False) :
     """
     Log the module versions
     
@@ -354,11 +364,15 @@ def log_versions(logger, packages:list=[], pull_from_sys:bool=False, pull_submod
         >  pull_submodules, bool, default=False
            If True then also pull submodules from sys.modules
     """
+    ##  Initialise list of packages if none provided
+    if packages is None :
+        packages = []
+
     ##  If pull_from_sys then add modules from sys.modules
     if pull_from_sys :
-        packages = [(k,v) for k,v in sys.modules.items() if hasattr(v, "__version__") and (pull_submodules or "." not in lstrip_multiple(k, [".","/"]))]
-        packages = sorted(packages, key=lambda p:p[0])
-        packages = [v for k,v in packages]
+        packages += [(k,v) for k,v in sys.modules.items() if hasattr(v, "__version__") and (pull_submodules or "." not in lstrip_multiple(k, [".","/"]))]
+        packages  = sorted(packages, key=lambda p:p[0])
+        packages  = [v for k,v in packages]
         return log_versions(logger, packages)
 
     ##  Create nicely-formatted strings
@@ -411,7 +425,7 @@ def rstrip_multiple(s:str, chars:list) :
 
 
 
-def summarise_dict(dict_or_obj, base_str:str="", global_summary_list:list=[], lvl_separator:str=">") :
+def summarise_dict(dict_or_obj, base_str:str="", lvl_separator:str=">") :
     """Return a list of strings summarising objects in a nested dictionary
 
     Inputs:
@@ -422,21 +436,21 @@ def summarise_dict(dict_or_obj, base_str:str="", global_summary_list:list=[], lv
         >  base_str, str, default=''
            String summarising the higher-level namespaces in which the current object is nested
 
-        >  global_summary_list, list, default=[]
-           List containing strings of all objects in the dictionary that have been created so far, to be appended with current object
-
         >  lvl_separator, str, default=">"
            String use to represent passing to a lower level of the dictionary
     """
+    
+    ##  Create a new summary list
+    summary_list = []
 
     ##  If we were given a dictionary then iterate and recursively call this function on all elements
     ##  Otherwise append a new summary string to the global list for this object, using the base string to resolve all higher-level namespaces
-    if type(dict_or_obj) is dict :
+    if isinstance(dict_or_obj, dict) :
         for k, v in dict_or_obj.items() :
-            new_base_str = f"{base_str} {lvl_separator} {k}" if len(base_str) > 0 else str(k)
-            summarise_dict(v, new_base_str, global_summary_list, lvl_separator)
+            new_base_str = f"{base_str}{lvl_separator}{k}" if base_str else str(k)
+            summary_list += summarise_dict(v, new_base_str, lvl_separator)
     else :
-        global_summary_list.append(f"{base_str}: {dict_or_obj}")
+        summary_list.append(f"{base_str}: {dict_or_obj}")
 
     ##  Return list of all object summarise created so far - at top-level this will be all objects in the dictionary
-    return global_summary_list
+    return summary_list
