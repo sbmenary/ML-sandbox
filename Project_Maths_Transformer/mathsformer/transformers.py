@@ -8,21 +8,33 @@ Definition of maths transformer objects.
 
 from __future__ import annotations
 
+import logging, math
+
 import numpy      as np
 import tensorflow as tf
+
+from collections.abc import Callable
 
 from tensorflow.keras.layers     import Add, Average, Concatenate, Embedding, Input
 from tensorflow.keras.models     import Model
 from tensorflow.keras.optimizers import Adam
 
-from .tf_objects import (masked_accuracy, masked_sparse_categorical_crossentropy, DecoderBlock, EncoderBlock, 
-                         Enumerate, FeedForwardBlock, LearnableMixture, PositionalEncoding)
+from .data import RandomDataGenerator_Addition
+from .tf_objects import (DecoderBlock, EncoderBlock, Enumerate, FeedForwardBlock, LearnableMixture, MaskedCategoricalAccuracy,
+                         MaskedSparseCategoricalCrossentropy, PositionalEncoding)
+
+
+##=================##
+##==   Globals   ==##
+##=================##
+
+##  Module logger
+logger  = logging.getLogger(__name__)
 
 
 ##=============##
 ##   Methods   ##
 ##=============##
-
 
 def create_text_to_text_model(vocab_length:int, 
                               name:str, 
@@ -34,6 +46,7 @@ def create_text_to_text_model(vocab_length:int,
                               optimizer           = Adam,
                               optimizer_args:dict = None,
                               pos_enc_num_freqs:int       = 32, pos_enc_min_period:float     = 5, pos_enc_max_period:float = 10000,
+                              pos_enc_learnable:bool      = False,
                               ndim_embedding:int          = 64, comb_type:str                = "average",
                               num_pre_layers_encoder:int  = 0 , ndim_pre_layers_encoder:int  = 512, skip_connect_pre_encoder:bool = True,
                               num_pre_layers_decoder:int  = 0 , ndim_pre_layers_decoder:int  = 512, skip_connect_pre_decoder:bool = True,
@@ -67,6 +80,7 @@ def create_text_to_text_model(vocab_length:int,
         >  pos_enc_num_freqs , int  , default=32   : Number of frequencies used for positional encoding, which will be of length 2*pos_enc_num_freqs
         >  pos_enc_min_period, float, default=5    : Lower limit of the geometric series of wave-periods used for positional encoding
         >  pos_enc_max_period, float, default=10000: Upper limit of the geometric series of wave-periods used for positional encoding
+        >  pos_enc_learnable , bool , default=False: Whether the positional encoding frequencies should be learnable parameters
 
         >  ndim_embedding, int, default=64       : Size of the token embeddings
         >  comb_type     , str, default="average": Method for combining the token embeddings and position encodings
@@ -139,11 +153,13 @@ def create_text_to_text_model(vocab_length:int,
     x_pos_enc = PositionalEncoding(num_freqs  = pos_enc_num_freqs, 
                                    min_period = pos_enc_min_period, 
                                    max_period = pos_enc_max_period, 
+                                   learnable  = pos_enc_learnable,
                                    dtype      = dtype, 
                                    name       = f"{name}_encoder_position_encoding")(x_pos_enc)
     x_pos_dec = PositionalEncoding(num_freqs  = pos_enc_num_freqs, 
                                    min_period = pos_enc_min_period, 
                                    max_period = pos_enc_max_period, 
+                                   learnable  = pos_enc_learnable,
                                    dtype      = dtype, 
                                    name       = f"{name}_decoder_position_encoding")(x_pos_dec)
 
@@ -238,9 +254,11 @@ def create_text_to_text_model(vocab_length:int,
     
     ##  Compile model with sparse categorical crossentropy loss and accuracy metric
     if do_compile :
-        model.compile(loss        = masked_sparse_categorical_crossentropy, 
+        acc  = MaskedCategoricalAccuracy(scalar_output=True, equal_token_weight=True, use_keras_mask=False, mask_value=0)
+        loss = MaskedSparseCategoricalCrossentropy(scalar_output=True, equal_token_weight=True, use_keras_mask=False, mask_value=0, from_logits=True)
+        model.compile(loss        = loss, 
                       optimizer   = optimizer(**optimizer_args), 
-                      metrics     = [masked_accuracy],
+                      metrics     = [acc],
                       jit_compile = jit_compile)
     
     ##  Return model
@@ -270,7 +288,139 @@ class Transformer_Text_to_Text :
         """
         self.model           = model
         self.token_transform = token_transform
+
+
+    def masked_transform_from_data_tensor(self, X, Y_in, max_tokens:int=-1, device:str="CPU") :
+        """
+        Transform a tensor of input data into its predicted output string using masking. This means that all tokens attend to
+        the correct representation of those that come before, regardless of whether the correct tokens were predicted before.
+        
+        Inputs:
+        
+            >  X, tf.Tensor of shape [N, S1]
+               Tensor of tokens for the encoder input sequence 
+        
+            >  Y_in, tf.Tensor of shape [N, S1]
+               Tensor of tokens for the decoder input sequence 
+               
+            >  max_tokens, int, default=-1
+               Maximum tokens in sequence
+               
+            >  device, str, default="CPU"
+               Device to run tensorflow on
+        """
+        ##  Recurse over tensor of inputs
+        if len(X.shape) > 1 and X.shape[0] > 1 :
+            return [self.masked_transform_from_data_tensor(Xp, Yp, max_tokens, device) for Xp, Yp in zip(X, Y_in)]
+        
+        ##  Check max tokens is long enough to contain a full sequence
+        min_sequence_length = len(self.token_transform.seq_start_char) + len(self.token_transform.seq_end_char)
+        if max_tokens > 0 and max_tokens < min_sequence_length :
+            raise ValueError(f"max_tokens must have a minimum length of {min_sequence_length}, {max_tokens} provided")
+        
+        ##  If X is shape [S, F] then reshape it to [B, S, F] with B=1
+        one_sequence_provided = len(X.shape) == 1
+        if one_sequence_provided :
+            X = tf.expand_dims(X, axis=0)
+
+        ##  If Y_in is shape [S, F] then reshape it to [B, S, F] with B=1
+        one_sequence_provided = len(Y_in.shape) == 1
+        if one_sequence_provided :
+            Y_in = tf.expand_dims(Y_in, axis=0)
+
+        ##  Get output tokens
+        with tf.device(device) :
+            Y = self.model([X, Y_in]).numpy().argmax(axis=-1)
                 
+        ##  Drop first dimension of Y (denoting batch size of length 1)
+        Y = Y[0]
+
+        ##  Trim Y to maximum length
+        if max_tokens > 0 :
+            Y = Y[:max_tokens]
+
+        ##  Convert tensor-of-tokens into a string of detokenised characters, and strip start/end characters
+        out_str = "".join([self.token_transform.detokeniser_dict[t] for t in Y])
+        out_str.rstrip(self.token_transform.mask_char)
+        if out_str[0]  == self.token_transform.seq_start_char : out_str = out_str[1:]
+        if out_str[-1] == self.token_transform.seq_end_char   : out_str = out_str[:-1]
+            
+        ##  Return string with same format as input
+        return out_str if one_sequence_provided else [out_str]
+                
+
+    def print_predictions_table(self, data_gen, num_print:int, print_fn:Callable[[str],None]=None, max_tokens:int=-1, 
+                                min_col_length:int=12, max_col_length:int=30, negative_char:str='-') :
+            """
+            Print a table showing a number of generated datapoints alongside their predictions from the given transformer
+            
+            Inputs:
+            
+                >  data_gen, tf.tensors [[X, Y_in], Y_out] or data.RandomDataGenerator_Addition
+                   Data sourve, either tensors or generator object
+                
+                >  num_print, int, default
+                   Number of rows to print
+                
+                >  print_fn, callable with signature print_fn(str), default=logger.info
+                   Function used to print rows
+                
+                >  max_tokens, int, default=-1
+                   Maximum number of tokens allowed to be generated by the transformer
+                
+                >  min_col_length, int, default=10
+                   Minimum column length
+                
+                >  max_col_length, int, default=30
+                   Maximum column length
+                
+                >  negative_char, str, default='-'
+                   Negative character representation
+            """
+            ##  Resolve print function
+            if print_fn is None :
+                print_fn = logger.info
+
+            ##  Get data tensors
+            if isinstance(data_gen, RandomDataGenerator_Addition) :
+                X, Y_in, Y_out = data_gen.get_as_tensors(num_batches=math.ceil(num_print/data_gen.batch_size))
+            else :
+                (X, Y_in), Y_out = data_gen
+
+            ##  Get model predictions and log alongside true labels 
+            col1, col2, col3, col4, col5, col6 = [], [], [], [], [], []
+            for x, y_in, x_str, true_y_str in zip(X   [:num_print], 
+                                                  Y_in[:num_print],
+                                                  self.token_transform.detokenise_strings(X    [:num_print,:].numpy()),
+                                                  self.token_transform.detokenise_strings(Y_out[:num_print  ].numpy())) :
+                pred_y_str_mask = self.masked_transform_from_data_tensor(x, y_in, max_tokens=max_tokens)
+                pred_y_str_gen  = self.transform_from_data_tensor(x, max_tokens=max_tokens)
+                result = "X  " if pred_y_str_gen == true_y_str else ""
+                try    : residual = str(int(pred_y_str_gen.replace(negative_char, "-")) - int(true_y_str.replace(negative_char, "-")))
+                except : residual = "?   "
+                col1.append(x_str)
+                col2.append(true_y_str)
+                col3.append(pred_y_str_mask)
+                col4.append(pred_y_str_gen)
+                col5.append(result)
+                col6.append(residual)
+            
+            ##  Figure out lengths of each column
+            l1 = max([min([max([len(x) for x in col1]), max_col_length]) + 1, min_col_length + 1])
+            l2 = max([min([max([len(x) for x in col2]), max_col_length]) + 1, min_col_length + 1])
+            l3 = max([min([max([len(x) for x in col3]), max_col_length]) + 1, min_col_length + 1])
+            l4 = max([min([max([len(x) for x in col4]), max_col_length]) + 1, min_col_length + 1])
+            l5 = max([min([max([len(x) for x in col5]), max_col_length]) + 1, min_col_length + 1])
+            l6 = max([min([max([len(x) for x in col6]), max_col_length]) + 1, min_col_length + 1])
+            lt  = l1 + l2 + l3 + l4 + l5 + l6
+
+            ##  Log table header
+            print_fn("-"*lt)
+            print_fn("INPUT".rjust(l1) + "TRUE".rjust(l2) + "PRED(MASK)".rjust(l3) + "PRED(GEN)".rjust(l4) + "CORRECT".rjust(l5) + "RESIDUAL".rjust(l6))
+            print_fn("-"*lt)
+            for s1, s2, s3, s4, s5, s6 in zip(col1, col2, col3, col4, col5, col6) :
+                print_fn(s1[:max_col_length].rjust(l1) + s2[:max_col_length].rjust(l2) + s3[:max_col_length].rjust(l3) + s4[:max_col_length].rjust(l4) + s5[:max_col_length].rjust(l5) + s6[:max_col_length].rjust(l6))
+            
 
     def transform_from_data_tensor(self, X, max_tokens:int=-1, device:str="CPU", strategy:str="argmax") :
         """
@@ -278,8 +428,8 @@ class Transformer_Text_to_Text :
         
         Inputs:
         
-            >  X, Tensor with final dimensions [S, 2]
-               Tensor of (token, index) pairs for the input sequence of length S
+            >  X, tf.Tensor of shape [N, S1]
+               Tensor of tokens for the encoder input sequence 
                
             >  max_tokens, int, default=-1
                Maximum tokens in sequence
@@ -292,7 +442,7 @@ class Transformer_Text_to_Text :
         """
         ##  Recurse over tensor of inputs
         if len(X.shape) > 1 and X.shape[0] > 1 :
-            return [self.transform_from_data_tensor(Xp, max_tokens, device) for Xp in X]
+            return [self.transform_from_data_tensor(Xp, max_tokens, device, strategy) for Xp in X]
         
         ##  Check max tokens is long enough to contain a full sequence
         min_sequence_length = len(self.token_transform.seq_start_char) + len(self.token_transform.seq_end_char)

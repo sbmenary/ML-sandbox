@@ -6,11 +6,19 @@
 Definition of methods for program configuration.
 """
 
-import ast, configparser
+import ast, configparser, logging
 
 from collections.abc import Callable
 
 from .utils import summarise_dict
+
+
+##=================##
+##==   Globals   ==##
+##=================##
+
+##  Module logger
+logger  = logging.getLogger(__name__)
 
 
 

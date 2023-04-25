@@ -6,20 +6,24 @@
 Definition of methods for running self-supervised learning attion model experiments.
 """
 
-import logging
+import logging, time
 
+import numpy      as np
 import tensorflow as tf
 
+from collections.abc import Callable
+
 from matplotlib                 import pyplot as plt
-from tensorflow.keras.callbacks import Callback, EarlyStopping, ModelCheckpoint
+from tensorflow.keras.callbacks import Callback, EarlyStopping, LambdaCallback, ModelCheckpoint
 from tensorflow.keras.models    import Model
 
 from .config       import Config
 from .data         import RandomDataGenerator_Addition, TokenTransform
 from .tf_objects   import (create_custom_objects_dict, 
-                           masked_accuracy, masked_sparse_categorical_crossentropy, 
+                           scalar_masked_categorical_accuracy, scalar_masked_sparse_categorical_crossentropy,
+                           MaskedCategoricalAccuracy, MaskedSparseCategoricalCrossentropy, 
                            DecoderBlock, EncoderBlock, Enumerate, FeedForwardBlock, LearnableMixture, PositionalEncoding,
-                           AdaptiveLearningRate, LayerWeightsRecord, LoggerCallback,
+                           AdaptiveLearningRate, LayerActivationRecord, LayerWeightsRecord, LoggerCallback, MetricRecord,
                           )
 from .transformers import create_text_to_text_model, Transformer_Text_to_Text
 
@@ -166,6 +170,89 @@ DEFAULT_CONFIG = {
 ##=================##
 
 
+def create_tensor_dataset(token_transform, max_int:int, negative_char:str='-', include_neg:bool=True, shuffle:bool=True) :
+    '''
+    Create dataset of tensors X, Y_in, Y_out
+    
+    X is a tokenised representation of a str "A+B" or "A-B"
+    Y is a tokenised representation of the answer, sliced s.t. Y_in=Y[:-1] and Y_out=Y[1:]
+    A, B are integers with maximum amplitude given
+    
+    Inputs:
+    
+        >  token_transform, data.TokenTransform
+           Tokeniser object
+           
+        >  max_int, int
+           Maximum integer amplitude (inclusive)
+           
+        >  negative_char, str, default='-'
+           Character used to represent a negative number
+           
+        >  include_neg, bool, default=True
+           If True then A,B include both +ve and -ve integers, otherwise only +ve
+           
+        >  shuffle, bool, default=True
+           If True then shuffle dataset
+           
+    Returns:
+    
+        >  X    , tf.Tensor of shape [N, S1], tensor of N tokenised input sums
+        >  Y_in , tf.Tensor of shape [N, S2], tensor of N tokenised answer inputs
+        >  Y_out, tf.Tensor of shape [N, S2], tensor of N tokenised answer labels
+    '''
+    ##  Log start
+    logger.info(f"Creating data tensors with max_int={max_int:,}, negative_char={negative_char}, include_neg={include_neg}, shuffle={shuffle}")
+    
+    ##  Get start time
+    start_time = time.time()
+    
+    ##  Get array of individual numbers
+    if include_neg : singles = np.arange(-max_int, max_int+1, dtype=np.int32) 
+    else           : singles = np.arange(0       , max_int+1, dtype=np.int32)
+        
+    ##  Get array of pairs of numbers
+    pairs   = np.array([[(x,y) for x in singles] for y in singles])
+    pairs   = np.concatenate(pairs)
+    
+    ##  Get array of A+B and A-B for all pairs (A,B)
+    summed  = pairs[:,0] + pairs[:,1]
+    minus   = pairs[:,0] - pairs[:,1]
+    
+    ##  Create dataset of str representations of sums
+    dataset = []
+    for (i1, i2), s, m in zip(pairs, summed, minus) :
+        i1, i2 = f"{i1}".replace("-", negative_char), f"{i2}".replace("-", negative_char)
+        s , m  = f"{s }".replace("-", negative_char), f"{m }".replace("-", negative_char)
+        dataset.append((f"{i1}+{i2}", f"{s}"))
+        dataset.append((f"{i1}-{i2}", f"{m}"))
+        
+    ##  Shuffle strings
+    np.random.shuffle(dataset)
+    
+    ##  Log strings creation including execution time
+    logger.info(f"Created list of strings with length {len(dataset):,} in {time.time()-start_time:.1f}s")
+    
+    ##  Reset start time for logging
+    start_time = time.time()
+    
+    ##  Convert strings to data tensors
+    data_X = token_transform.strings_to_tensor([x[0] for x in dataset])
+    data_Y = token_transform.strings_to_tensor([x[1] for x in dataset])
+    
+    ##  Delete strings from memory
+    del dataset
+    
+    ##  Slice labels into model input and output
+    data_Y_in, data_Y_out = data_Y[:,:-1], data_Y[:,1:]
+    
+    ##  Log final result
+    logger.info(f"Strings converted to tensors with shape [{data_X.shape}, {data_Y_in.shape}], {data_Y_out.shape} in {time.time()-start_time:.1f}s")
+
+    ##  Return sliced data tensors
+    return data_X, data_Y_in, data_Y_out
+
+
 def create_text_to_text_model_from_config(cfg_model:Config, token_transform:TokenTransform) :
     """
     Create a text-to-text transformer model
@@ -190,6 +277,7 @@ def create_text_to_text_model_from_config(cfg_model:Config, token_transform:Toke
                           pos_enc_num_freqs        = cfg_model["positional_encoding"]["num_freqs"],
                           pos_enc_min_period       = cfg_model["positional_encoding"]["min_period"],
                           pos_enc_max_period       = cfg_model["positional_encoding"]["max_period"],
+                          pos_enc_learnable        = cfg_model["positional_encoding"]["learnable"],
                           ndim_embedding           = cfg_model["ndim_embedding"],
                           comb_type                = cfg_model["comb_type"],
                           num_pre_layers_encoder   = cfg_model["pre_encoder"]["num_layers"],
@@ -215,7 +303,9 @@ def create_text_to_text_model_from_config(cfg_model:Config, token_transform:Toke
 
 
 
-def get_callbacks(cfg_training:Config, working_dir:str="") -> list[Callback] :
+def get_callbacks(cfg_training:Config, working_dir:str="", transformer:Transformer_Text_to_Text=None, 
+                  train_gen:RandomDataGenerator_Addition=None, val_gen:RandomDataGenerator_Addition=None,
+                  negative_char:str="-") -> list[Callback] :
     """
     Inputs:
     
@@ -276,6 +366,19 @@ def get_callbacks(cfg_training:Config, working_dir:str="") -> list[Callback] :
         callbacks.append(model_checkpoint)
         logger.info(f"Registeried training callback: ModelCheckpoint with filepath={filepath}")
 
+    ##  Add callback to record layer activations
+    layer_activations_record_config = cfg_training.get("layer_activations_record", {})
+    if layer_activations_record_config.get("do", False) :
+        batch_frequency = layer_activations_record_config.get("batch_frequency", 1000)
+        max_datapoints  = layer_activations_record_config.get("max_datapoints" , 128)
+        (val_X, val_Y_in), val_Y_out = val_gen
+        layer_activation_record = LayerActivationRecord(
+            batch_frequency = batch_frequency, 
+            val_input       = [val_X[:max_datapoints], val_Y_in[:max_datapoints]], 
+        )
+        logger.info(f"Registering training callback: LayerActivationRecord with batch_frequency={batch_frequency}, max_datapoints={max_datapoints}")
+        callbacks.append(layer_activation_record)
+
     ##  Add callback to record layer weights - use recursive=True to monitor all sublayers
     layer_weights_record_config = cfg_training.get("layer_weights_record", {})
     if layer_weights_record_config.get("do", False) :
@@ -286,12 +389,64 @@ def get_callbacks(cfg_training:Config, working_dir:str="") -> list[Callback] :
         callbacks.append(layer_weights_record)
         logger.info(f"Registered training callback: LayerWeightsRecord with batch_frequency={batch_frequency}, recursive={recursive}")
 
+    ##  Add callback for printing table
+    print_table_callback_config = cfg_training.get("print_tables_during_training", {})
+    if print_table_callback_config.get("do", False) :
+        num_print = print_table_callback_config.get("num_print", 5)
+        callback  = LambdaCallback(on_epoch_end=lambda batch, logs : test_transformer(
+            transformer, train_gen, val_gen, num_print=num_print, print_fn=logger.debug, negative_char=negative_char))
+        callbacks.append(callback)
+        logger.info(f"Registered training callback: LambdaCallback for test_transformer with num_print={num_print}")
+
+    ##  Add callback to intermittently record loss & accuracy over small subset of validation data
+    loss_record_config = cfg_training.get("loss_record", {})
+    if loss_record_config.get("do", False) :
+        batch_frequency  = loss_record_config.get("batch_frequency", 1000)
+        max_datapoints   = loss_record_config.get("max_datapoints" , 2048)
+        num_bootstrap    = loss_record_config.get("num_bootstrap"  , 10)
+        plot_frequency   = loss_record_config.get("plot_frequency" , -1)
+        plot_after_epoch = loss_record_config.get("plot_after_epoch", False)
+        log_lvl          = loss_record_config.get("log_lvl"         , logging.DEBUG)
+        (val_X, val_Y_in), val_Y_out = val_gen
+        loss_record = MetricRecord(
+            batch_frequency   = batch_frequency, 
+            val_input         = [val_X[:max_datapoints], val_Y_in[:max_datapoints]], 
+            val_output        = val_Y_out[:max_datapoints],
+            func              = scalar_masked_sparse_categorical_crossentropy,
+            label             = "Partial\nval. loss.",
+            yscale            = "log",
+            num_bootstrap     = num_bootstrap,
+            plot_on_train_end = True,
+            plot_on_epoch_end = plot_after_epoch,
+            plot_frequency    = plot_frequency,
+            logger            = logger,
+            log_lvl           = log_lvl,
+        )
+        callbacks.append(loss_record)
+        logger.info(f"Registered training callback: MetricRecord with batch_frequency={batch_frequency}, max_datapoints={max_datapoints}, num_bootstrap={num_bootstrap}, plot_frequency={plot_frequency}, plot_after_epoch={plot_after_epoch}, log_lvl=log_lvl")
+        acc_record = MetricRecord(
+            batch_frequency   = batch_frequency, 
+            val_input         = [val_X[:max_datapoints], val_Y_in[:max_datapoints]], 
+            val_output        = val_Y_out[:max_datapoints],
+            func              = scalar_masked_categorical_accuracy,
+            label             = "Partial\nval. acc.",
+            yscale            = "linear",
+            num_bootstrap     = num_bootstrap,
+            plot_on_train_end = True,
+            plot_on_epoch_end = plot_after_epoch,
+            plot_frequency    = plot_frequency,
+            logger            = logger,
+            log_lvl           = log_lvl,
+        )
+        callbacks.append(acc_record)
+        logger.info(f"Registered training callback: MetricRecord (masked_accuracy) with batch_frequency={batch_frequency}, max_datapoints={max_datapoints}, num_bootstrap={num_bootstrap}")
+
     ##  Return list of callbacks
     return callbacks
 
 
 
-def get_data_generators(cfg_data:Config, token_transform:TokenTransform) -> tuple[RandomDataGenerator_Addition, RandomDataGenerator_Addition, RandomDataGenerator_Addition] :
+def get_data_generators(cfg_data:Config, token_transform:TokenTransform) -> tuple[RandomDataGenerator_Addition, RandomDataGenerator_Addition, RandomDataGenerator_Addition, RandomDataGenerator_Addition] :
     """
     Create train/val/test data generators
 
@@ -312,6 +467,17 @@ def get_data_generators(cfg_data:Config, token_transform:TokenTransform) -> tupl
                                     num_batches     = cfg_data["train_data"]["num_batches"],
                                     base_seed       = cfg_data["train_data"]["gen_base_seed"],
                                     reproducible    = cfg_data["train_data"]["gen_reproducible"],
+                                    negative_char   = cfg_data["negative_char"],)
+    
+    ##  Create training data generator that has forced reproducible=True
+    train_gen_reproducible = RandomDataGenerator_Addition(
+                                    token_transform = token_transform, 
+                                    int_lengths     = cfg_data["train_data"]["int_lengths"],
+                                    num_ints        = cfg_data["train_data"]["num_ints"],
+                                    batch_size      = cfg_data["train_data"]["batch_size"],
+                                    num_batches     = cfg_data["train_data"]["num_batches"],
+                                    base_seed       = cfg_data["train_data"]["gen_base_seed"],
+                                    reproducible    = True,
                                     negative_char   = cfg_data["negative_char"],)
     
     ##  Log a sample training batch
@@ -352,7 +518,7 @@ def get_data_generators(cfg_data:Config, token_transform:TokenTransform) -> tupl
     logger.info(f"Output shapes for a test batch are ({X.shape}, {Y_in.shape}), {Y_out.shape}")
     
     ##  Return all three generators
-    return train_gen, val_gen, test_gen
+    return train_gen, train_gen_reproducible, val_gen, test_gen
 
 
 
@@ -370,8 +536,8 @@ def load_text_to_text_model(fname:str) -> Model :
                                                 DecoderBlock, EncoderBlock, FeedForwardBlock)
     
     ##  Add custom loss and metrics to custom_objects
-    custom_objects["masked_sparse_categorical_crossentropy"] = masked_sparse_categorical_crossentropy
-    custom_objects["masked_accuracy"] = masked_accuracy
+    custom_objects["MaskedCategoricalAccuracy"] = MaskedCategoricalAccuracy
+    custom_objects["MaskedSparseCategoricalCrossentropy"] = MaskedSparseCategoricalCrossentropy
     
     ##  Load model and return
     return tf.keras.models.load_model(fname, custom_objects=custom_objects)
@@ -419,14 +585,14 @@ def plot_training_curves(history:dict, show:bool=False, close:bool=False, savefi
         ##  Create and format LHS axis, which has a linear yscale
         ax1 = fig.add_subplot(2*num_rows, 2, 2*row_idx + 1)
         ax1.tick_params(which="both", direction="in", top=True, right=True, labelsize=9)
-        ax1.xaxis.set_ticklabels([])
+        if row_idx != num_rows - 1 : ax1.xaxis.set_ticklabels([])
         ax1.grid(which="both")
         ax1.set_ylabel("Metric\nvalue", ha="right", va="center", fontsize=12, labelpad=15, rotation=0)
         
         ##  Create and format LHS axis, which has a log yscale
         ax2 = fig.add_subplot(2*num_rows, 2, 2*row_idx + 2)
         ax2.tick_params(which="both", direction="in", top=True, right=True, labelsize=9)
-        ax2.xaxis.set_ticklabels([])
+        if row_idx != num_rows - 1 : ax2.xaxis.set_ticklabels([])
         ax2.set_yscale("log")
         ax2.grid(which="both")
         
@@ -517,26 +683,35 @@ def plot_weights(callbacks:list[Callback], show:bool=True, savefig:str=None) -> 
 
 
 def test_transformer(transformer   :Transformer_Text_to_Text,
-                     train_gen     :RandomDataGenerator_Addition, 
-                     val_gen       :RandomDataGenerator_Addition, 
-                     test_gen      :RandomDataGenerator_Addition,
+                     train_gen     :RandomDataGenerator_Addition=None, 
+                     val_gen       :RandomDataGenerator_Addition=None, 
+                     test_gen      :RandomDataGenerator_Addition=None,
                      num_print     :int=10,
-                     max_tokens    :int=30,
-                     max_col_length:int=30) -> None :
+                     max_tokens    :int=25,
+                     max_col_length:int=25,
+                     negative_char :str="-",
+                     print_fn      :Callable[[str],None]=None) -> None :
     """
     Print a short table summarising a few data entries from each generator
     """
+    ##  Resolve print_fn
+    if print_fn is None :
+        print_fn = logger.info
+
     ##  Test transformer with training generator
-    logger.info("Running text --> text mathsformer inference on some training data:")
-    train_gen.print_predictions_table(transformer, num_print=num_print, max_tokens=max_tokens, max_col_length=max_col_length)
+    if train_gen is not None :
+        print_fn("Running text --> text mathsformer inference on some training data:")
+        transformer.print_predictions_table(train_gen, num_print=num_print, max_tokens=max_tokens, max_col_length=max_col_length, negative_char=negative_char, print_fn=print_fn)
     
     ##  Test transformer with validation generator
-    logger.info("Running text --> text mathsformer inference on some validation data:")
-    val_gen.print_predictions_table(transformer, num_print=num_print, max_tokens=max_tokens, max_col_length=max_col_length)
+    if val_gen is not None :
+        print_fn("Running text --> text mathsformer inference on some validation data:")
+        transformer.print_predictions_table(val_gen, num_print=num_print, max_tokens=max_tokens, max_col_length=max_col_length, negative_char=negative_char, print_fn=print_fn)
     
     ##  Test transformer with test generator
-    logger.info("Running text --> text mathsformer inference on some test data:")
-    test_gen.print_predictions_table(transformer, num_print=num_print, max_tokens=max_tokens, max_col_length=max_col_length)
+    if test_gen is not None :
+        print_fn("Running text --> text mathsformer inference on some test data:")
+        transformer.print_predictions_table(test_gen, num_print=num_print, max_tokens=max_tokens, max_col_length=max_col_length, negative_char=negative_char, print_fn=print_fn)
 
 
 

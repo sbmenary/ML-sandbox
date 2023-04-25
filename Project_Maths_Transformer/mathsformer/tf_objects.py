@@ -15,13 +15,14 @@ import numpy      as np
 import tensorflow as tf
 import tensorflow.keras.backend as K
 
+from abc import ABC, abstractmethod
+
 from matplotlib import pyplot as plt
 
 from tensorflow.keras.callbacks import Callback
-from tensorflow.keras.layers    import (Add, Average, BatchNormalization, Concatenate, Dense, Dot, Dropout, Embedding, Input, Lambda, Layer, 
-                                        LayerNormalization, Masking, MultiHeadAttention, Rescaling)
+from tensorflow.keras.layers    import (Add, Average, BatchNormalization, Concatenate, Dense, Dropout, Layer, 
+                                        LayerNormalization, MultiHeadAttention)
 from tensorflow.keras.models    import Model, Sequential
-from tensorflow.keras.losses    import Loss, SparseCategoricalCrossentropy
 
 
 
@@ -29,13 +30,11 @@ from tensorflow.keras.losses    import Loss, SparseCategoricalCrossentropy
 ##   Globals   ##
 ##=============##
 
+##  Module logger
+logger  = logging.getLogger(__name__)
+
 ##  Numerical constants
 pi, two_pi = math.pi, 2*math.pi
-
-##  An instance of sparse categorical cross-entropy loss
-sparse_categorical_crossentropy_loss = SparseCategoricalCrossentropy(from_logits=True, reduction='none')
-
-
 
 
 ##=============##
@@ -105,7 +104,7 @@ def get_nested_sublayers(layer) :
     return layers
 
 
-def masked_accuracy(y, y_pred, mask_value=0) :
+def scalar_masked_categorical_accuracy(y, y_pred, mask_value=0) :
     """
     Computes the sparse categorical cross-entropy over only unmasked tokens
     May be used as a tf loss function
@@ -144,7 +143,7 @@ def masked_accuracy(y, y_pred, mask_value=0) :
     return acc
 
 
-def masked_sparse_categorical_crossentropy(y, y_pred, mask_value:int=0, weight_seq_by_length:bool=False) :
+def scalar_masked_sparse_categorical_crossentropy(y, y_pred, mask_value:int=0, weight_seq_by_length:bool=False) :
     """
     Computes the sparse categorical cross-entropy over only unmasked tokens
     May be used as a tf loss function
@@ -168,7 +167,7 @@ def masked_sparse_categorical_crossentropy(y, y_pred, mask_value:int=0, weight_s
     mask = y != mask_value
         
     ##  Calculate the loss for every token, including masked tokens
-    loss = sparse_categorical_crossentropy_loss(y, y_pred)
+    loss = tf.losses.sparse_categorical_crossentropy(y, y_pred, from_logits=True)
     
     ##  Cast the mask to the same dtype as the loss values
     mask = tf.cast(mask, dtype=loss.dtype)
@@ -369,7 +368,7 @@ class AttentionBlock(CustomLayer) :
             >  ndim_hidden, int
                Number of neurons in the query / key dimension being contracted over
 
-            >  ndim_out, int
+            >  ndim_out, int, default=None
                Number of neurons in the output feature vector
 
             >  dropout, float, default=0
@@ -1482,6 +1481,225 @@ class LoggerCallback(Callback) :
 
 
 
+##===============================##
+##   MaskedMetric keras metric   ##
+##===============================##
+##
+class MaskedMetric : 
+    
+    def __init__(self, 
+                 scalar_output      : bool = True, 
+                 equal_token_weight : bool = True, 
+                 use_keras_mask     : int  = False, 
+                 mask_value         : int  = None, 
+                 **kwargs) :
+        """
+        class MaskedMetric
+        
+        Calculates metric values excluding masked values. 
+        
+        If mask_value is not None, we mask datapoints with this truth label
+        If use_keras_mask is True, we inherit a _keras_mask from the model outputs
+        If both then they are combined
+        
+        if scalar_output and equal_token_weight:
+            -->  returns "mean metric per unmasked token"
+            -->  By returning a scalar, we do not allow for use of sample_weight
+        
+        if scalar_output and not equal_token_weight:
+            -->  returns "mean masked metric per sequence"
+            -->  By returning a scalar, we do not allow for use of sample_weight
+        
+        if not scalar_output and equal_token_weight:
+            -->  returns "mean masked metric for each row", scaled s.t. reduction-by-avg will return the 
+                 "mean metric per unmasked token"
+            -->  By returning a tensor, we allow for use of sample_weight - however, this will no longer combine
+                 to "mean metric per unmasked token" because we cannot correctly account for the sample_weights 
+                 when calculating the scaling factor! This is because we have access "sum-of-mask-over-all-data",
+                 whereas we would need access to "weighted-sum-of-mask", which is unavailable
+        
+        if not scalar_output and not equal_token_weight:
+            -->  returns "mean masked metric for each row"
+            -->  By returning a tensor, we allow for use of sample_weight - in this case, the reduction will be
+                 correct, and we may always interpret the result as "mean masked metric per weighted row"
+            -->  This configuration is therefore recommended when using sample_weight to avoid unexpected
+                 behaviour, although it means that we weight the tokens of short sequences much more highly than
+                 those of long sequences, which is often undesired
+        
+        N.B. When we output a vector instead of a scalar/tensor, we often find a GraphExecutionError as keras
+             fails to squeeze the dimensions. Therefore we output a tensor of values instead.
+        N.B. There may be a better way that allows native correct calculation of loss, e.g. using a Masking?
+        N.B. Reading the docs for keras.losses.Loss and keras.loss.LossWrapper, it seems like the mask and
+             sample_weight should be combined correctly, but this appears to not be so
+        """
+        ##  Store self config
+        self.scalar_output      = scalar_output
+        self.equal_token_weight = equal_token_weight
+        self.use_keras_mask     = use_keras_mask
+        self.mask_value         = mask_value
+        self.kwargs             = kwargs
+        
+        ##  Store additional arguments as self attributes
+        for kwarg, val in kwargs.items() :
+            setattr(self, kwarg, val)
+            
+            
+    @abstractmethod
+    def calculate_metric(self, y_true:tf.Tensor, y_pred:tf.Tensor) :
+        """
+        Calculate the metric value on per-element basis. Must be implemented by derived class.
+        """
+        raise NotImplementedError()
+        
+        
+    def __call__(self, y_true:tf.Tensor, y_pred:tf.Tensor) :
+        """
+        Calculate the metric, masking by value or _keras_mask as configured
+        """
+        ##  Get base loss
+        loss = self.calculate_metric(y_true, y_pred)
+        
+        ##  Set the dtype as whatever we got from the base loss
+        dtype = loss.dtype
+        
+        ##  Create mask and cast to dtype
+        mask = self.get_mask(y_true, y_pred)
+        mask = tf.cast(mask, dtype=dtype)
+        
+        ##  Mask loss
+        masked_loss = loss * mask
+        
+        ##  Return scalar loss assigning equal weight to all unmaksed tokens
+        if self.scalar_output and self.equal_token_weight :
+            return tf.reduce_sum(masked_loss) / tf.reduce_sum(mask)
+        
+        ##  Return scalar loss assigning equal weight to all sequences, regardless of num. unmasked tokens
+        if self.scalar_output and not self.equal_token_weight :
+            ##  First calculate the masked means over each sequence
+            seq_means = tf.reduce_sum(masked_loss, axis=-1) / tf.reduce_sum(mask, axis=-1)
+            ##  Then return the mean over sequences
+            return tf.reduce_mean(seq_means)
+        
+        ##  Vector outputs are based on sum masked loss across each row
+        num_rows    = tf.cast(tf.reduce_prod(tf.shape(y_true)[:-1]), dtype)
+        row_width   = tf.cast(tf.shape(y_true)[-1], dtype)
+        
+        ##  Return vector accuracy with equal weight given to each sequence
+        if not self.equal_token_weight :
+            loss_per_row = tf.reduce_sum(masked_loss, axis=-1)
+            loss_per_row = tf.expand_dims(loss_per_row, axis=-1)
+            tile_shape   = [1]*(len(tf.shape(loss_per_row)) - 1) + [row_width]
+            tiled_acc    = tf.tile(loss_per_row, tile_shape)
+            return tiled_acc 
+        
+        ##  Return accuracies scaled by number
+        return masked_loss * num_rows * row_width / tf.reduce_sum(mask)
+        
+        '''##  Vector outputs are based on sum masked loss across each row
+        loss_per_row = tf.reduce_sum(masked_loss, axis=-1)
+        tensor_loss  = loss_per_row[..., tf.newaxis]
+        num_rows     = tf.cast(tf.reduce_prod(tf.shape(y_true)[:-1]), dtype)
+        row_width    = tf.cast(tf.shape(y_true)[-1], dtype)
+        
+        ##  Return vector loss with equal weight given to each sequence
+        if not self.equal_token_weight :
+            return tensor_loss / tf.reduce_sum(mask, axis=-1)[..., tf.newaxis]
+        
+        ##  Calculate a per-row scale factor that causes avg-over-vector to return avg-per-unmasked-token
+        row_sfs  = num_rows / tf.reduce_sum(mask)
+        
+        ##  Return vector loss assigning equal weight to all unmased tokens
+        return tensor_loss * row_sfs[..., tf.newaxis]'''
+        
+        
+    def get_config(self) :
+        """
+        Return dictionary of config arguments:values needed to recreate object
+        """
+        config = {}
+        config["scalar_output"     ] = self.scalar_output
+        config["equal_token_weight"] = self.equal_token_weight
+        config["use_keras_mask"    ] = self.use_keras_mask
+        config["mask_value"        ] = self.mask_value
+        for kwarg, val in self.kwargs.items() :
+            config[kwarg] = val
+        return config
+
+ 
+    def get_mask(self, y_true:tf.Tensor=None, y_pred:tf.Tensor=None) :
+        """
+        Create masking tensor for inputs y_true and y_pred
+        
+        If configured, a mask is created where y_true entries are equal to self.mask_value
+        If configured, a second mask is taken from y_pred._keras_mask
+        The up-to-two masks are combined
+        
+        Inputs:
+        
+            >  y_true, tf.Tensor, default=None
+               Tensor of truth labels, masked according to their values
+        
+            >  y_pred, tf.Tensor, default=None
+               Tensor of model outputs, masked according to its _keras_mask
+        """
+        ##  Initialise True mask
+        mask = True 
+        
+        ##  Combine with value mask
+        if self.mask_value is not None :
+            mask = mask & (y_true != self.mask_value)
+        
+        ##  Combine with keras mask
+        if self.use_keras_mask :
+            mask = mask & y_pred._keras_mask
+                    
+        ##  Return
+        return mask
+    
+
+
+##============================================##
+##   MaskedCategoricalAccuracy keras metric   ##
+##============================================##
+##
+class MaskedCategoricalAccuracy(MaskedMetric) :
+    """
+    class MaskedCategoricalAccuracy
+        
+    Calculates categorical accuracy excluding masked values. 
+    """
+    
+    def calculate_metric(self, y_true:tf.Tensor, y_pred:tf.Tensor) :
+        """
+        Returns the accuracy.
+        """
+        return tf.keras.metrics.sparse_categorical_accuracy(y_true, y_pred)
+    
+
+
+##======================================================##
+##   MaskedSparseCategoricalCrossentropy keras metric   ##
+##======================================================##
+##
+class MaskedSparseCategoricalCrossentropy(MaskedMetric) :
+    """
+    class MaskedSparseCategoricalCrossentropy
+        
+    Calculates sparse categorical cross-entropy loss excluding masked values. 
+        
+    Value masks may also be achieved using the basic keras loss function with "ignore_class" argument, but 
+    this may lead to unexpected behaviour when using certain reduction schemes along with sample_weight. By
+    performing the reduction by hand, we achieve predictable behaviour when using sample_weight - although
+    this behaviour might not be what you naively expect - see below!
+    """
+    
+    def calculate_metric(self, y_true:tf.Tensor, y_pred:tf.Tensor) :
+        """
+        Returns the sparse categorical cross-entropy loss.
+        """
+        return tf.keras.metrics.sparse_categorical_crossentropy(y_true, y_pred, from_logits=self.from_logits)
+
+
 ##=================================##
 ##   MetricRecord keras callback   ##
 ##=================================##
@@ -1776,7 +1994,7 @@ class MetricRecord(Callback) :
 ##
 class PositionalEncoding(CustomLayer) :
 
-    def __init__(self, num_freqs:int, slice_index:int=None, min_period:float=5, max_period:float=1e5, base:float=np.e, **kwargs) :
+    def __init__(self, num_freqs:int, slice_index:int=None, min_period:float=5, max_period:float=1e5, base:float=np.e, learnable:bool=False, **kwargs) :
         '''
         class PositionalEncoding
 
@@ -1805,6 +2023,9 @@ class PositionalEncoding(CustomLayer) :
 
             >  base, float, default=np.e
                Base of the geometric series of num_freqs frequencies between 2pi/max_period and 2pi/min_period
+
+            >  learnable, bool, default=False
+               Whether to initialise the frequencies as trainable parameters
         '''
 
         ##  Base class contructor
@@ -1816,6 +2037,7 @@ class PositionalEncoding(CustomLayer) :
         self.min_period  = min_period
         self.max_period  = max_period
         self.base        = base
+        self.learnable   = learnable
 
         ##  Create keras sublayers
         self.initialise_frequencies()
@@ -1856,28 +2078,10 @@ class PositionalEncoding(CustomLayer) :
         else : 
             x  = x[:, :, self.slice_index, tf.newaxis]  # Shape [B, S, 1]
         x  = tf.cast(x, self.dtype)
-        cx = tf.math.cos(tf.matmul(x, self._freqs))     # [B, S, 1] * [1, F] --> Shape [B, S, F]
-        sx = tf.math.sin(tf.matmul(x, self._freqs))     # [B, S, 1] * [1, F] --> Shape [B, S, F]
+        cx = tf.math.cos(tf.matmul(x, self.freqs))     # [B, S, 1] * [1, F] --> Shape [B, S, F]
+        sx = tf.math.sin(tf.matmul(x, self.freqs))     # [B, S, 1] * [1, F] --> Shape [B, S, F]
+        #return tf.concat([tf.matmul(x, self.freqs), tf.matmul(x, self.freqs)], axis=-1)             # Shape [B, S, 2F]
         return tf.concat([cx, sx], axis=-1)             # Shape [B, S, 2F]
-        
-
-    def encode_np(self, x) :
-        '''
-        Calculate positional encodings for numpy array x.
-        x has shape [B, S, N]
-           B is batch size
-           S is sequence length
-           N is num features
-           F is num frequencies
-        x must contain the token position index at feature index self.slice_index
-        '''
-        if type(self.slice_index) == type(None) : 
-            x  = x[:, :, np.newaxis]                    # Shape [B, S, 1]
-        else : 
-            x  = x[:, :, self.slice_index, np.newaxis]  # Shape [B, S, 1]
-        cx = np.cos(np.matmul(x, self._freqs_np))       # [B, S, 1] * [1, F] --> Shape [B, S, F]
-        sx = np.sin(np.matmul(x, self._freqs_np))       # [B, S, 1] * [1, F] --> Shape [B, S, F]
-        return np.concat([cx, sx], axis=-1)             # Shape [B, S, 2F]
     
 
     def get_config(self) :
@@ -1893,6 +2097,7 @@ class PositionalEncoding(CustomLayer) :
                 "min_period"  : self.min_period,
                 "max_period"  : self.max_period, 
                 "base"        : self.base, 
+                "learnable"   : self.learnable, 
             })
         return config
 
@@ -1905,8 +2110,16 @@ class PositionalEncoding(CustomLayer) :
         ##  Create constant array of frequencies following a log series between 2pi/max_period and 2pi/min_period
         ##  -  array has shape (1, self.num_freqs) to enable correct broadcasting through matrix multiplication
         ##  -  store copy as Tensor object
-        self._freqs_np = np.logspace(np.log(two_pi/self.max_period), np.log(two_pi/self.min_period), self.num_freqs, base=self.base, dtype=np.float32).reshape((1, self.num_freqs))
-        self._freqs    = tf.constant(self._freqs_np, dtype=self.dtype)
+        ##  Set the scale factor
+        freqs_np   = np.logspace(np.log(two_pi/self.max_period), np.log(two_pi/self.min_period), self.num_freqs, base=self.base, dtype=np.float64)
+        freqs_np   = freqs_np.reshape((1, self.num_freqs))
+        self.freqs = self.add_weight(
+                        f"{self.name}_frequencies", 
+                        initializer = tf.keras.initializers.Constant(value=tf.constant(freqs_np, dtype=self.dtype)),
+                        shape       = freqs_np.shape,
+                        trainable   = True,
+                        dtype       = self.dtype,
+                    )
 
 
 

@@ -18,6 +18,15 @@ from collections.abc import Callable
 from .utils import CustomLogLevel
 
 
+##=================##
+##==   Globals   ==##
+##=================##
+
+##  Module logger
+logger  = logging.getLogger(__name__)
+
+
+
 ##=============##
 ##   Methods   ##
 ##=============##
@@ -482,7 +491,7 @@ class RandomDataGenerator_Addition(tf.keras.utils.Sequence) :
             >  num_print, int
                Number of rows to print
                
-            >  print_fn, callable with signature print_fn(str), default=print
+            >  print_fn, callable with signature print_fn(str), default=logger.info
                Function used to print rows
                
             >  max_tokens, int, default=-1
@@ -495,7 +504,7 @@ class RandomDataGenerator_Addition(tf.keras.utils.Sequence) :
                Maximum column length
         """
         if print_fn is None :
-            print_fn = print
+            print_fn = logger.info
 
         X, Y_in, Y_out = self.get_as_tensors(num_batches=math.ceil(num_print/self.batch_size))
 
