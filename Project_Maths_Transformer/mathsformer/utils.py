@@ -277,7 +277,7 @@ def initialise_program(program_description:str, working_dir:str, cfg:dict, base_
     """
     
     ##  Create working directory
-    working_dir = create_working_directory(working_dir, tags=cfg["global"])
+    working_dir = create_working_directory(working_dir, tags=cfg)
     print(fancy_message(f"Working directory created at {working_dir}"))
     
     ##  Start logging to stdout and to a file stream in working directory
@@ -454,3 +454,38 @@ def summarise_dict(dict_or_obj, base_str:str="", lvl_separator:str=">") :
 
     ##  Return list of all object summarise created so far - at top-level this will be all objects in the dictionary
     return summary_list
+
+
+
+def trim_string(s:str, length:int, ljust:int=-1, rjust:int=-1, num_dots:int=3) :
+    """
+    Trim string s down to a fixed length.
+
+    Inputs:
+
+        >  s, str
+           String to be trimmed
+
+        >  length, int
+           Length to be trimmed to
+
+        >  ljust, int, default=-1
+           If >0 then left-pad return string to this length 
+
+        >  rjust, int, default=-1
+           If >0 then right-pad return string to this length 
+
+        >  num_dots, int, default=3
+           If input string is too long, replace the final num_dots characters with '.'s
+    """
+    if ljust > 0 :
+        length = min([length, ljust])
+    if rjust > 0 :
+        length = min([length, rjust])
+    if len(s) > length :
+        s = s[:length - num_dots] + "."*num_dots
+    if ljust > 0 :
+        s = s.ljust(ljust)
+    if rjust > 0 :
+        s = s.rjust(rjust)
+    return s

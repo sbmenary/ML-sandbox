@@ -20,8 +20,10 @@ from tensorflow.keras.models     import Model
 from tensorflow.keras.optimizers import Adam
 
 from .data import RandomDataGenerator_Addition
+from .utils import trim_string
 from .tf_objects import (DecoderBlock, EncoderBlock, Enumerate, FeedForwardBlock, LearnableMixture, MaskedCategoricalAccuracy,
                          MaskedSparseCategoricalCrossentropy, PositionalEncoding)
+from .tf_objects import scalar_masked_sparse_categorical_crossentropy, scalar_masked_categorical_accuracy
 
 
 ##=================##
@@ -39,6 +41,7 @@ logger  = logging.getLogger(__name__)
 def create_text_to_text_model(vocab_length:int, 
                               name:str, 
                               do_compile:bool     = True,
+                              use_old_loss:bool   = False,
                               dtype_in            = tf.int32, 
                               dtype               = tf.float32, 
                               dropout:float       = 0.1, 
@@ -52,8 +55,10 @@ def create_text_to_text_model(vocab_length:int,
                               num_pre_layers_decoder:int  = 0 , ndim_pre_layers_decoder:int  = 512, skip_connect_pre_decoder:bool = True,
                               num_encoder_blocks:int      = 5 , ndim_encoder:int             = 64 , skip_connect_encoder:bool     = True,
                               num_heads_encoder:int       = 8 , ndim_att_hidden_encoder:int  = 128, ndim_ff_hidden_encoder:int    = 128, 
+                              num_encoder_loops:int       = 1,
                               num_decoder_blocks:int      = 5 , ndim_decoder:int             = 64 , skip_connect_decoder:bool     = True,
                               num_heads_decoder:int       = 8 , ndim_att_hidden_decoder:int  = 128, ndim_ff_hidden_decoder:int    = 128, 
+                              num_decoder_loops:int       = 1,
                               num_post_layers_decoder:int = 3 , ndim_post_layers_decoder:int = 512, 
                              ) :
     """
@@ -69,9 +74,10 @@ def create_text_to_text_model(vocab_length:int,
         >  vocab_length, int: Number of tokens in the dictionary, enumerated as integers on [0, vocab_length)
         >  name        , str: Unique name for the model (also used to derive names of layers and sublayers)
 
-        >  do_compile, bool            , default=True      : Whether to compile the model
-        >  dtype_in  , dtype-compatible, default=tf.int32  : Data type of the input tensor
-        >  dtype     , dtype-compatible, default=tf.float32: Data type of intermediate and output layers
+        >  do_compile  , bool            , default=True      : Whether to compile the model
+        >  use_old_loss, bool            , default=False     : Whether to use the old scalar loss function
+        >  dtype_in    , dtype-compatible, default=tf.int32  : Data type of the input tensor
+        >  dtype       , dtype-compatible, default=tf.float32: Data type of intermediate and output layers
 
         >  dropout       , float                , default=0.1                    : Dropout rate used by attention and feed-forward blocks
         >  optimizer     , keras optimizer class, default=Adam                   : Keras optimizer used to compile model
@@ -97,6 +103,7 @@ def create_text_to_text_model(vocab_length:int,
         >  num_encoder_blocks  , int , default=5   : Number of encoder blocks
         >  ndim_encoder        , int , default=64  : Length of encoder outputs
         >  skip_connect_encoder, bool, default=True: Whether to apply a skip-connection across the encoder's attention and feed-forward blocks 
+        >  num_encoder_loops   , int , default=1   : How many times to pass through the encoder blocks
 
         >  num_heads_encoder      , int, default=8  : Number of parallel heads in each attention-block
         >  ndim_att_hidden_encoder, int, default=128: Number of neurons in the hidden dimension contracted over to compute attention weights
@@ -105,6 +112,7 @@ def create_text_to_text_model(vocab_length:int,
         >  num_decoder_blocks  , int , default=5   : Number of decoder blocks
         >  ndim_decoder        , int , default=64  : Length of decoder outputs
         >  skip_connect_decoder, bool, default=True: Whether to apply a skip-connection across the decoder's attention and feed-forward blocks 
+        >  num_decoder_loops   , int , default=1   : How many times to pass through the decoder blocks
 
         >  num_heads_decoder      , int, default=8  : Number of parallel heads in each attention-block
         >  ndim_att_hidden_decoder, int, default=128: Number of neurons in the hidden dimension contracted over to compute attention weights
@@ -211,30 +219,40 @@ def create_text_to_text_model(vocab_length:int,
     ##============================================================##
     ##===  Encoder blocks - Output shape [B, S, ndim_encoder]  ===##
     ##============================================================##
+    encoder_blocks = []
     for layer_idx in range(num_encoder_blocks) :
-        x_enc = EncoderBlock(ndim_encoder, 
-                             num_heads_encoder, 
-                             ndim_att_hidden_encoder, 
-                             ndim_ff_hidden_encoder, 
-                             dropout_mha  = dropout, 
-                             dtype        = dtype, 
-                             layer_norm   = True, 
-                             skip_connect = skip_connect_encoder, 
-                             name         = f"{name}_encoder_block_{layer_idx+1}")(x_enc)
+        encoder_blocks.append(EncoderBlock(
+                                 ndim_encoder, 
+                                 num_heads_encoder, 
+                                 ndim_att_hidden_encoder, 
+                                 ndim_ff_hidden_encoder, 
+                                 dropout_mha  = dropout, 
+                                 dtype        = dtype, 
+                                 layer_norm   = True, 
+                                 skip_connect = skip_connect_encoder, 
+                                 name         = f"{name}_encoder_block_{layer_idx+1}"))
+    for _ in range(num_encoder_loops) :
+        for encoder_block in encoder_blocks :
+            x_enc = encoder_block(x_enc)
     
     ##============================================================##
     ##===  Decoder blocks - Output shape [B, S, ndim_decoder]  ===##
     ##============================================================##
+    decoder_blocks = []
     for layer_idx in range(num_decoder_blocks) :
-        x_dec = DecoderBlock(ndim_decoder, 
-                             num_heads_decoder, 
-                             ndim_att_hidden_decoder, 
-                             ndim_ff_hidden_decoder, 
-                             dropout_mha  = dropout, 
-                             dtype        = dtype, 
-                             layer_norm   = True, 
-                             skip_connect = skip_connect_decoder, 
-                             name         = f"{name}_decoder_block_{layer_idx+1}")([x_dec, x_enc])
+        decoder_blocks.append(DecoderBlock(
+                                 ndim_decoder, 
+                                 num_heads_decoder, 
+                                 ndim_att_hidden_decoder, 
+                                 ndim_ff_hidden_decoder, 
+                                 dropout_mha  = dropout, 
+                                 dtype        = dtype, 
+                                 layer_norm   = True, 
+                                 skip_connect = skip_connect_decoder, 
+                                 name         = f"{name}_decoder_block_{layer_idx+1}"))
+    for _ in range(num_decoder_loops) :
+        for decoder_block in decoder_blocks :
+            x_dec = decoder_block([x_dec, x_enc])
         
     ##==================================================================================================##
     ##===  Predict logit probabilities using feed-forward block - Output shape [B, S, vocab_length]  ===##
@@ -254,8 +272,12 @@ def create_text_to_text_model(vocab_length:int,
     
     ##  Compile model with sparse categorical crossentropy loss and accuracy metric
     if do_compile :
-        acc  = MaskedCategoricalAccuracy(scalar_output=True, equal_token_weight=True, use_keras_mask=False, mask_value=0)
-        loss = MaskedSparseCategoricalCrossentropy(scalar_output=True, equal_token_weight=True, use_keras_mask=False, mask_value=0, from_logits=True)
+        if use_old_loss :
+            acc  = scalar_masked_categorical_accuracy
+            loss = scalar_masked_sparse_categorical_crossentropy
+        else :
+            acc  = MaskedCategoricalAccuracy(scalar_output=True, equal_token_weight=True, use_keras_mask=False, mask_value=0)
+            loss = MaskedSparseCategoricalCrossentropy(scalar_output=True, equal_token_weight=True, use_keras_mask=False, mask_value=0, from_logits=True)
         model.compile(loss        = loss, 
                       optimizer   = optimizer(**optimizer_args), 
                       metrics     = [acc],
@@ -330,7 +352,14 @@ class Transformer_Text_to_Text :
 
         ##  Get output tokens
         with tf.device(device) :
-            Y = self.model([X, Y_in]).numpy().argmax(axis=-1)
+            Y = self.model([X, Y_in])
+            if type(Y) in [list, set, tuple] :
+                Y = Y[0]
+            Y = Y.numpy().argmax(axis=-1)
+            
+
+            if type(Y) in [list, set, tuple] :
+                Y = Y[0]
                 
         ##  Drop first dimension of Y (denoting batch size of length 1)
         Y = Y[0]
@@ -382,16 +411,27 @@ class Transformer_Text_to_Text :
                 print_fn = logger.info
 
             ##  Get data tensors
-            if isinstance(data_gen, RandomDataGenerator_Addition) :
+            if isinstance(data_gen, tf.keras.utils.Sequence) :
                 X, Y_in, Y_out = data_gen.get_as_tensors(num_batches=math.ceil(num_print/data_gen.batch_size))
             else :
                 (X, Y_in), Y_out = data_gen
+
+            ##  Get str repr of X
+            try :
+                X_str = self.token_transform.detokenise_strings(X[:num_print,:].numpy())
+            except : 
+                X_str = [str(x) for x in X[:num_print,0].numpy()]
+
+            if max_col_length > 0 :
+                if max_tokens < 1 :
+                    max_tokens = max_col_length
+                max_tokens = min([max_tokens, max_col_length])
 
             ##  Get model predictions and log alongside true labels 
             col1, col2, col3, col4, col5, col6 = [], [], [], [], [], []
             for x, y_in, x_str, true_y_str in zip(X   [:num_print], 
                                                   Y_in[:num_print],
-                                                  self.token_transform.detokenise_strings(X    [:num_print,:].numpy()),
+                                                  X_str,
                                                   self.token_transform.detokenise_strings(Y_out[:num_print  ].numpy())) :
                 pred_y_str_mask = self.masked_transform_from_data_tensor(x, y_in, max_tokens=max_tokens)
                 pred_y_str_gen  = self.transform_from_data_tensor(x, max_tokens=max_tokens)
@@ -419,7 +459,12 @@ class Transformer_Text_to_Text :
             print_fn("INPUT".rjust(l1) + "TRUE".rjust(l2) + "PRED(MASK)".rjust(l3) + "PRED(GEN)".rjust(l4) + "CORRECT".rjust(l5) + "RESIDUAL".rjust(l6))
             print_fn("-"*lt)
             for s1, s2, s3, s4, s5, s6 in zip(col1, col2, col3, col4, col5, col6) :
-                print_fn(s1[:max_col_length].rjust(l1) + s2[:max_col_length].rjust(l2) + s3[:max_col_length].rjust(l3) + s4[:max_col_length].rjust(l4) + s5[:max_col_length].rjust(l5) + s6[:max_col_length].rjust(l6))
+                print_fn(trim_string(s1, max_col_length, rjust=l1) + 
+                         trim_string(s2, max_col_length, rjust=l2) + 
+                         trim_string(s3, max_col_length, rjust=l3) + 
+                         trim_string(s4, max_col_length, rjust=l4) + 
+                         trim_string(s5, max_col_length, rjust=l5) + 
+                         trim_string(s6, max_col_length, rjust=l6))
             
 
     def transform_from_data_tensor(self, X, max_tokens:int=-1, device:str="CPU", strategy:str="argmax") :
@@ -475,7 +520,10 @@ class Transformer_Text_to_Text :
             while best_token != end_token and (max_tokens <= 0 or num_tokens < max_tokens) :
                 
                 ##  Generate logit predictions for all indices; slice logits for first sequence & final index
-                token_logits = self.model([X, Y])[0,-1].numpy()
+                token_logits = self.model([X, Y])
+                if type(token_logits) in [list, set, tuple] :
+                    token_logits = token_logits[0]
+                token_logits = token_logits[0,-1].numpy()
                 
                 ##  Infer a token from the logits generated
                 if do_argmax :

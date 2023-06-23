@@ -13,9 +13,10 @@ import tensorflow as tf
 
 from collections.abc import Callable
 
-from matplotlib                 import pyplot as plt
-from tensorflow.keras.callbacks import Callback, EarlyStopping, LambdaCallback, ModelCheckpoint
-from tensorflow.keras.models    import Model
+from matplotlib                  import pyplot as plt
+from tensorflow.keras.callbacks  import Callback, EarlyStopping, LambdaCallback, ModelCheckpoint
+from tensorflow.keras.models     import Model
+from tensorflow.keras.optimizers import Adam
 
 from .config       import Config
 from .data         import RandomDataGenerator_Addition, TokenTransform
@@ -140,7 +141,7 @@ DEFAULT_CONFIG = {
         },
         "model_checkpoint" : {
             "do"       : True,
-            "filename" : "model_checkpoint_epoch{epoch}_val_loss_{val_loss:.5}.h5",
+            "filename" : "model_checkpoint_epoch{epoch}_val_loss_{val_loss:.5}.keras",
         },
         "layer_weights_record" : {
             "do"               : True,
@@ -266,40 +267,44 @@ def create_text_to_text_model_from_config(cfg_model:Config, token_transform:Toke
            Tokeniser
     """
     return create_text_to_text_model(
-                          vocab_length             = token_transform.vocab_length, 
-                          name                     = cfg_model["name"],
-                          do_compile               = True,
-                          dtype_in                 = token_transform.dtype,
-                          dtype                    = cfg_model["dtype"],
-                          dropout                  = cfg_model["dropout"],
-                          jit_compile              = cfg_model["jit_compile"],
-                          optimizer_args           = {"learning_rate": cfg_model["learning_rate"]},
-                          pos_enc_num_freqs        = cfg_model["positional_encoding"]["num_freqs"],
-                          pos_enc_min_period       = cfg_model["positional_encoding"]["min_period"],
-                          pos_enc_max_period       = cfg_model["positional_encoding"]["max_period"],
-                          pos_enc_learnable        = cfg_model["positional_encoding"]["learnable"],
-                          ndim_embedding           = cfg_model["ndim_embedding"],
-                          comb_type                = cfg_model["comb_type"],
-                          num_pre_layers_encoder   = cfg_model["pre_encoder"]["num_layers"],
-                          ndim_pre_layers_encoder  = cfg_model["pre_encoder"]["ndim"],
-                          skip_connect_pre_encoder = cfg_model["pre_encoder"]["skip_connect"],
-                          num_pre_layers_decoder   = cfg_model["pre_decoder"]["num_layers"],
-                          ndim_pre_layers_decoder  = cfg_model["pre_decoder"]["ndim"],
-                          skip_connect_pre_decoder = cfg_model["pre_decoder"]["skip_connect"],
-                          num_encoder_blocks       = cfg_model["encoder"]["num_blocks"],
-                          ndim_encoder             = cfg_model["encoder"]["ndim"],
-                          skip_connect_encoder     = cfg_model["encoder"]["skip_connect"],
-                          num_heads_encoder        = cfg_model["encoder"]["num_heads"],
-                          ndim_att_hidden_encoder  = cfg_model["encoder"]["ndim_att_hidden"],
-                          ndim_ff_hidden_encoder   = cfg_model["encoder"]["ndim_ff_hidden"],
-                          num_decoder_blocks       = cfg_model["decoder"]["num_blocks"],
-                          ndim_decoder             = cfg_model["decoder"]["ndim"],
-                          skip_connect_decoder     = cfg_model["decoder"]["skip_connect"],
-                          num_heads_decoder        = cfg_model["decoder"]["num_heads"],
-                          ndim_att_hidden_decoder  = cfg_model["decoder"]["ndim_att_hidden"],
-                          ndim_ff_hidden_decoder   = cfg_model["decoder"]["ndim_ff_hidden"],
-                          num_post_layers_decoder  = cfg_model["post_decoder"]["num_layers"],
-                          ndim_post_layers_decoder = cfg_model["post_decoder"]["ndim"])
+                          vocab_length                = token_transform.vocab_length, 
+                          name                        = cfg_model["name"],
+                          do_compile                  = True,
+                          use_old_loss                = cfg_model["use_old_loss"],
+                          dtype_in                    = token_transform.dtype,
+                          dtype                       = cfg_model["dtype"],
+                          dropout                     = cfg_model["dropout"],
+                          jit_compile                 = cfg_model["jit_compile"],
+                          optimizer                   = cfg_model.get("optimizer", Adam),
+                          optimizer_args              = cfg_model.get("optimizer_args", {}),
+                          pos_enc_num_freqs           = cfg_model["positional_encoding"]["num_freqs"],
+                          pos_enc_min_period          = cfg_model["positional_encoding"]["min_period"],
+                          pos_enc_max_period          = cfg_model["positional_encoding"]["max_period"],
+                          pos_enc_learnable           = cfg_model["positional_encoding"]["learnable"],
+                          ndim_embedding              = cfg_model["ndim_embedding"],
+                          comb_type                   = cfg_model["comb_type"],
+                          num_pre_layers_encoder      = cfg_model["pre_encoder"]["num_layers"],
+                          ndim_pre_layers_encoder     = cfg_model["pre_encoder"]["ndim"],
+                          skip_connect_pre_encoder    = cfg_model["pre_encoder"]["skip_connect"],
+                          num_pre_layers_decoder      = cfg_model["pre_decoder"]["num_layers"],
+                          ndim_pre_layers_decoder     = cfg_model["pre_decoder"]["ndim"],
+                          skip_connect_pre_decoder    = cfg_model["pre_decoder"]["skip_connect"],
+                          num_encoder_blocks          = cfg_model["encoder"]["num_blocks"],
+                          num_encoder_loops           = cfg_model["encoder"]["num_loops"],
+                          ndim_encoder                = cfg_model["encoder"]["ndim"],
+                          skip_connect_encoder        = cfg_model["encoder"]["skip_connect"],
+                          num_heads_encoder           = cfg_model["encoder"]["num_heads"],
+                          ndim_att_hidden_encoder     = cfg_model["encoder"]["ndim_att_hidden"],
+                          ndim_ff_hidden_encoder      = cfg_model["encoder"]["ndim_ff_hidden"],
+                          num_decoder_blocks          = cfg_model["decoder"]["num_blocks"],
+                          num_decoder_loops           = cfg_model["decoder"]["num_loops"],
+                          ndim_decoder                = cfg_model["decoder"]["ndim"],
+                          skip_connect_decoder        = cfg_model["decoder"]["skip_connect"],
+                          num_heads_decoder           = cfg_model["decoder"]["num_heads"],
+                          ndim_att_hidden_decoder     = cfg_model["decoder"]["ndim_att_hidden"],
+                          ndim_ff_hidden_decoder      = cfg_model["decoder"]["ndim_ff_hidden"],
+                          num_post_layers_decoder     = cfg_model["post_decoder"]["num_layers"],
+                          ndim_post_layers_decoder    = cfg_model["post_decoder"]["ndim"],)
 
 
 
@@ -355,16 +360,16 @@ def get_callbacks(cfg_training:Config, working_dir:str="", transformer:Transform
                                             logger       = logger,
                                             log_lvl      = log_lvl,)
         callbacks.append(adaptive_lr)
-        logger.info(f"Registeried training callback: AdaptiveLearningRate with decay_factor={decay_factor}, patience={patience}, monitor={monitor}, mode={mode}, log_lvl={log_lvl}")
+        logger.info(f"Registered training callback: AdaptiveLearningRate with decay_factor={decay_factor}, patience={patience}, monitor={monitor}, mode={mode}, log_lvl={log_lvl}")
 
     ## Add callback for model checkpointing
     model_checkpoint_config = cfg_training.get("model_checkpoint", {})
     if model_checkpoint_config.get("do", False) :
-        filename         = model_checkpoint_config.get("filename", "model_checkpoint_epoch{epoch}_val_loss_{val_loss:.5}.h5")
+        filename         = model_checkpoint_config.get("filename", "model_checkpoint_epoch{epoch}_val_loss_{val_loss:.5}.keras")
         filepath         = f"{working_dir}/{filename}"
         model_checkpoint = ModelCheckpoint(filepath=filepath)
         callbacks.append(model_checkpoint)
-        logger.info(f"Registeried training callback: ModelCheckpoint with filepath={filepath}")
+        logger.info(f"Registered training callback: ModelCheckpoint with filepath={filepath}")
 
     ##  Add callback to record layer activations
     layer_activations_record_config = cfg_training.get("layer_activations_record", {})
@@ -376,7 +381,7 @@ def get_callbacks(cfg_training:Config, working_dir:str="", transformer:Transform
             batch_frequency = batch_frequency, 
             val_input       = [val_X[:max_datapoints], val_Y_in[:max_datapoints]], 
         )
-        logger.info(f"Registering training callback: LayerActivationRecord with batch_frequency={batch_frequency}, max_datapoints={max_datapoints}")
+        logger.info(f"Registered training callback: LayerActivationRecord with batch_frequency={batch_frequency}, max_datapoints={max_datapoints}")
         callbacks.append(layer_activation_record)
 
     ##  Add callback to record layer weights - use recursive=True to monitor all sublayers
@@ -396,7 +401,7 @@ def get_callbacks(cfg_training:Config, working_dir:str="", transformer:Transform
         callback  = LambdaCallback(on_epoch_end=lambda batch, logs : test_transformer(
             transformer, train_gen, val_gen, num_print=num_print, print_fn=logger.debug, negative_char=negative_char))
         callbacks.append(callback)
-        logger.info(f"Registered training callback: LambdaCallback for test_transformer with num_print={num_print}")
+        logger.info(f"Registered training callback: LambdaCallback for test_transformer with num_print={num_print}, negative_char='{negative_char}'")
 
     ##  Add callback to intermittently record loss & accuracy over small subset of validation data
     loss_record_config = cfg_training.get("loss_record", {})
@@ -407,13 +412,16 @@ def get_callbacks(cfg_training:Config, working_dir:str="", transformer:Transform
         plot_frequency   = loss_record_config.get("plot_frequency" , -1)
         plot_after_epoch = loss_record_config.get("plot_after_epoch", False)
         log_lvl          = loss_record_config.get("log_lvl"         , logging.DEBUG)
-        (val_X, val_Y_in), val_Y_out = val_gen
+        (train_X, train_Y_in), train_Y_out = train_gen
+        if val_gen is not None :
+            (val_X, val_Y_in), val_Y_out = val_gen
         loss_record = MetricRecord(
             batch_frequency   = batch_frequency, 
-            val_input         = [val_X[:max_datapoints], val_Y_in[:max_datapoints]], 
-            val_output        = val_Y_out[:max_datapoints],
+            data_input        = [train_X[:max_datapoints], train_Y_in[:max_datapoints]], 
+            data_output       = train_Y_out[:max_datapoints],
+            validation_data   = None if val_gen is None else ([val_X[:max_datapoints], val_Y_in[:max_datapoints]], val_Y_out[:max_datapoints]),
             func              = scalar_masked_sparse_categorical_crossentropy,
-            label             = "Partial\nval. loss.",
+            label             = "Partial loss.",
             yscale            = "log",
             num_bootstrap     = num_bootstrap,
             plot_on_train_end = True,
@@ -426,10 +434,11 @@ def get_callbacks(cfg_training:Config, working_dir:str="", transformer:Transform
         logger.info(f"Registered training callback: MetricRecord with batch_frequency={batch_frequency}, max_datapoints={max_datapoints}, num_bootstrap={num_bootstrap}, plot_frequency={plot_frequency}, plot_after_epoch={plot_after_epoch}, log_lvl=log_lvl")
         acc_record = MetricRecord(
             batch_frequency   = batch_frequency, 
-            val_input         = [val_X[:max_datapoints], val_Y_in[:max_datapoints]], 
-            val_output        = val_Y_out[:max_datapoints],
+            data_input        = [train_X[:max_datapoints], train_Y_in[:max_datapoints]], 
+            data_output       = train_Y_out[:max_datapoints],
+            validation_data   = None if val_gen is None else ([val_X[:max_datapoints], val_Y_in[:max_datapoints]], val_Y_out[:max_datapoints]),
             func              = scalar_masked_categorical_accuracy,
-            label             = "Partial\nval. acc.",
+            label             = "Partial acc.",
             yscale            = "linear",
             num_bootstrap     = num_bootstrap,
             plot_on_train_end = True,
@@ -538,6 +547,8 @@ def load_text_to_text_model(fname:str) -> Model :
     ##  Add custom loss and metrics to custom_objects
     custom_objects["MaskedCategoricalAccuracy"] = MaskedCategoricalAccuracy
     custom_objects["MaskedSparseCategoricalCrossentropy"] = MaskedSparseCategoricalCrossentropy
+    custom_objects["scalar_masked_sparse_categorical_crossentropy"] = scalar_masked_sparse_categorical_crossentropy
+    custom_objects["scalar_masked_categorical_accuracy"] = scalar_masked_categorical_accuracy
     
     ##  Load model and return
     return tf.keras.models.load_model(fname, custom_objects=custom_objects)
@@ -687,8 +698,8 @@ def test_transformer(transformer   :Transformer_Text_to_Text,
                      val_gen       :RandomDataGenerator_Addition=None, 
                      test_gen      :RandomDataGenerator_Addition=None,
                      num_print     :int=10,
-                     max_tokens    :int=25,
-                     max_col_length:int=25,
+                     max_tokens    :int=15,
+                     max_col_length:int=30,
                      negative_char :str="-",
                      print_fn      :Callable[[str],None]=None) -> None :
     """

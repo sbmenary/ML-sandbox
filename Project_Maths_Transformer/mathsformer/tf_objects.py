@@ -21,7 +21,7 @@ from matplotlib import pyplot as plt
 
 from tensorflow.keras.callbacks import Callback
 from tensorflow.keras.layers    import (Add, Average, BatchNormalization, Concatenate, Dense, Dropout, Layer, 
-                                        LayerNormalization, MultiHeadAttention)
+                                        LayerNormalization, LeakyReLU,  MultiHeadAttention)
 from tensorflow.keras.models    import Model, Sequential
 
 
@@ -165,6 +165,8 @@ def scalar_masked_sparse_categorical_crossentropy(y, y_pred, mask_value:int=0, w
     """
     ##  Create the mask wherever the label is zero
     mask = y != mask_value
+
+    logger.info(f"{y.shape, y_pred.shape})")
         
     ##  Calculate the loss for every token, including masked tokens
     loss = tf.losses.sparse_categorical_crossentropy(y, y_pred, from_logits=True)
@@ -354,7 +356,7 @@ class AdaptiveLearningRate(Callback) :
 class AttentionBlock(CustomLayer) :
 
     
-    def __init__(self, num_heads:int, ndim_hidden:int, ndim_out:int, dropout:float=0, self_attention:bool=False, use_causal_mask:bool=False, skip_connect:bool=True, layer_norm:bool=True, _mha:MultiHeadAttention=None, **kwargs) :
+    def __init__(self, num_heads:int, ndim_hidden:int, ndim_out:int, dropout:float=0, self_attention:bool=False, use_causal_mask:bool=False, skip_connect:bool=True, pre_layer_norm:bool=True, post_layer_norm:bool=False, _mha:MultiHeadAttention=None, **kwargs) :
         '''
         class AttentionBlock
 
@@ -383,8 +385,11 @@ class AttentionBlock(CustomLayer) :
             >  skip_connect , bool, default=True
                Whether to use a skip connection
 
-            >  layer_norm , bool, default=True
-               Whether to use a layer normalisation
+            >  pre_layer_norm , bool, default=True
+               Whether to use a layer normalisation on the inputs
+
+            >  post_layer_norm , bool, default=False
+               Whether to use a layer normalisation on the outputs
 
             >  _mha, keras MultiHeadAttention layer, default=None
                Pre-existing MultiHeadAttention layer, perhaps deserialised after loading from file
@@ -401,14 +406,16 @@ class AttentionBlock(CustomLayer) :
         self.self_attention  = self_attention
         self.use_causal_mask = use_causal_mask
         self.skip_connect    = skip_connect
-        self.layer_norm      = layer_norm
+        self.pre_layer_norm  = pre_layer_norm
+        self.post_layer_norm = post_layer_norm
 
         ##  Create keras layers
         base_name = self.name
-        if _mha : self._mha = _mha
-        else    : self._mha = MultiHeadAttention(name=f"{base_name}_mha", num_heads=self.num_heads, key_dim=self.ndim_hidden, value_dim=self.ndim_out, dropout=self.dropout, dtype=self.dtype)
-        self._average   = Average           (name=f"{base_name}_average"   , dtype=self.dtype) if self.skip_connect else None
-        self._layernorm = LayerNormalization(name=f"{base_name}_layer_norm", dtype=self.dtype) if self.layer_norm   else None
+        if _mha : self._mha  = _mha
+        else    : self._mha  = MultiHeadAttention(name=f"{base_name}_mha", num_heads=self.num_heads, key_dim=self.ndim_hidden, value_dim=self.ndim_out, dropout=self.dropout, dtype=self.dtype)
+        self._add            = Add               (name=f"{base_name}_add"            , dtype=self.dtype) if self.skip_connect    else None
+        self._pre_layernorm  = LayerNormalization(name=f"{base_name}_pre_layer_norm" , dtype=self.dtype) if self.pre_layer_norm  else None
+        self._post_layernorm = LayerNormalization(name=f"{base_name}_post_layer_norm", dtype=self.dtype) if self.post_layer_norm else None
         
 
     def call(self, x, training=None, mask=None) :
@@ -422,19 +429,23 @@ class AttentionBlock(CustomLayer) :
         if self.self_attention : 
             if type(x) is list :
                 raise TypeError(f"With self-attention configured, expect input to be a single Tensor object (not a list)")
+            if self.pre_layer_norm : 
+                x = self._pre_layernorm(x, training=training)
             q, v = x, x
         else : 
             if type(x) != list :
                 raise TypeError(f"Not configured for self-attention, therefore expect input to be a list of two Tensors (query and reference)")
             q, v = x[0], x[1]
+            if self.pre_layer_norm : 
+                q = self._pre_layernorm(q, training=training)
 
         ##  Execute attention, skip-connection and layer-normalisation
         y = self._mha(query=q, value=v, use_causal_mask=self.use_causal_mask, training=training)
         if self.skip_connect : 
             q_dims, y_dims = q.shape[-1], y.shape[-1]
             if q_dims != y_dims : raise RuntimeError(f"Cannot apply skip-connection combining tensors of different dimensions {q_dims} and {y_dims}")
-            y = self._average([q, y])
-        if self.layer_norm   : y = self._layernorm(y, training=training)
+            y = self._add([q, y])
+        if self.post_layer_norm : y = self._post_layernorm(y, training=training)
         return y
 
 
@@ -475,7 +486,8 @@ class AttentionBlock(CustomLayer) :
                 "self_attention"  : self.self_attention, 
                 "use_causal_mask" : self.use_causal_mask, 
                 "skip_connect"    : self.skip_connect, 
-                "layer_norm"      : self.layer_norm, 
+                "pre_layer_norm"  : self.pre_layer_norm, 
+                "post_layer_norm" : self.post_layer_norm, 
                 "_mha"            : tf.keras.layers.serialize(self._mha),
             })
         return config
@@ -498,8 +510,8 @@ class AttentionBlock(CustomLayer) :
 class DecoderBlock(CustomLayer) :
 
 
-    def __init__(self, ndim_out:int, num_heads:int, ndim_hidden_mha:int, ndim_hidden_ff:int, num_hidden_layers_ff:int=1, dropout_mha:float=0, dropout_ff:float=0, skip_connect:bool=True, 
-                 layer_norm:bool=True, use_causal_mask:bool=True, activation:str="relu", _self_att_block:AttentionBlock=None, _cross_att_block:AttentionBlock=None, **kwargs) :
+    def __init__(self, ndim_out:int, num_heads:int, ndim_hidden_mha:int, ndim_hidden_ff:int, num_hidden_layers_ff:int=1, dropout_mha:float=0, dropout_ff:float=0, skip_connect:bool=True, pre_layer_norm:bool=True, 
+                 post_layer_norm:bool=False, use_causal_mask:bool=True, activation:str="leakyrelu", leakyrelu_gradient:float=0.1, _self_att_block:AttentionBlock=None, _cross_att_block:AttentionBlock=None, **kwargs) :
         """
         A keras layer for applying causally-masked multi-head self-attention, followed by cross-attention to an encoded sequence
         encoded sequence
@@ -530,14 +542,20 @@ class DecoderBlock(CustomLayer) :
             >  skip_connect, bool, default=True
                Whether to use skip-connections in the attention and feed-forward blocks
 
-            >  layer_norm, bool, default=True
-               Whether to use layer normalisation in the attention and feed-forward blocks
+            >  pre_layer_norm, bool, default=True
+               Whether to use input layer normalisation in the attention and feed-forward blocks
+
+            >  post_layer_norm, bool, default=False
+               Whether to use output layer normalisation in the attention and feed-forward blocks
 
             >  use_causal_mask, bool, default=True
                Whether to apply a causal mask in the multi-head attention block
 
             >  activation, str, default="relu"
                Activation function for non-linear layers
+
+            >  leakyrelu_gradient, float, default=0.1
+               Gradient for the negative side of the leakyrelu activation function
 
             >  _self_att_block, AttentionBlock, default=None
                Pre-existing AttentionBlock layer for self-attention step, perhaps deserialised after loading from file
@@ -557,17 +575,19 @@ class DecoderBlock(CustomLayer) :
         self.dropout_mha          = dropout_mha
         self.dropout_ff           = dropout_ff
         self.skip_connect         = skip_connect
-        self.layer_norm           = layer_norm
+        self.pre_layer_norm       = pre_layer_norm
+        self.post_layer_norm      = post_layer_norm
         self.use_causal_mask      = use_causal_mask
         self.activation           = activation
+        self.leakyrelu_gradient   = leakyrelu_gradient
         
         ##  Create keras layers
         base_name = self.name
         if   _self_att_block  : self._self_att_block  = _self_att_block
-        else                  : self._self_att_block  = AttentionBlock(name=f"{base_name}_self_attention_block" , ndim_out=ndim_out, ndim_hidden=ndim_hidden_mha, dropout=dropout_mha, skip_connect=skip_connect, layer_norm=layer_norm, dtype=self.dtype, num_heads=num_heads, use_causal_mask=use_causal_mask, self_attention=True)
+        else                  : self._self_att_block  = AttentionBlock(name=f"{base_name}_self_attention_block" , ndim_out=ndim_out, ndim_hidden=ndim_hidden_mha, dropout=dropout_mha, skip_connect=skip_connect, pre_layer_norm=pre_layer_norm, post_layer_norm=post_layer_norm, dtype=self.dtype, num_heads=num_heads, use_causal_mask=use_causal_mask, self_attention=True)
         if   _cross_att_block : self._cross_att_block = _cross_att_block
-        else                  : self._cross_att_block = AttentionBlock(name=f"{base_name}_cross_attention_block", ndim_out=ndim_out, ndim_hidden=ndim_hidden_mha, dropout=dropout_mha, skip_connect=skip_connect, layer_norm=layer_norm, dtype=self.dtype, num_heads=num_heads, use_causal_mask=False, self_attention=False)
-        self._ff_block = FeedForwardBlock(name=f"{base_name}_feedfwd_block", ndim_out=ndim_out, ndim_hidden=ndim_hidden_ff, dropout=dropout_ff, skip_connect=skip_connect, layer_norm=layer_norm, dtype=self.dtype, batch_norm=False, activation=activation, num_hidden_layers=num_hidden_layers_ff)
+        else                  : self._cross_att_block = AttentionBlock(name=f"{base_name}_cross_attention_block", ndim_out=ndim_out, ndim_hidden=ndim_hidden_mha, dropout=dropout_mha, skip_connect=skip_connect, pre_layer_norm=pre_layer_norm, post_layer_norm=post_layer_norm, dtype=self.dtype, num_heads=num_heads, use_causal_mask=False, self_attention=False)
+        self._ff_block = FeedForwardBlock(name=f"{base_name}_feedfwd_block", ndim_out=ndim_out, ndim_hidden=ndim_hidden_ff, dropout=dropout_ff, skip_connect=skip_connect, pre_layer_norm=pre_layer_norm, post_layer_norm=post_layer_norm, dtype=self.dtype, batch_norm=False, activation=activation, num_hidden_layers=num_hidden_layers_ff)
                     
         
     def call(self, x, training=False, mask=None) :
@@ -592,7 +612,7 @@ class DecoderBlock(CustomLayer) :
     @classmethod
     def from_config(cls, config) :
         """
-        Create a new EncoderBlock layer from a dictionary generated by the get_config() method.
+        Create a new DecoderBlock layer from a dictionary generated by the get_config() method.
         """
 
         ##  Deserialise the AttentionBlock layers inside config
@@ -607,8 +627,8 @@ class DecoderBlock(CustomLayer) :
 
     def get_config(self) :
         """
-        Create the config dict needed to save models that contain EncoderBlock layers. 
-        This dict stores all values we need to pass to __init__ to create a EncoderBlock layer with the same configuration.
+        Create the config dict needed to save models that contain DecoderBlock layers. 
+        This dict stores all values we need to pass to __init__ to create a DecoderBlock layer with the same configuration.
         The config dict includes a serialised copy of the AttentionBlock layer that must be deserialised upon loading.
         """
         config = super().get_config()
@@ -622,9 +642,11 @@ class DecoderBlock(CustomLayer) :
                 "dropout_mha"          : self.dropout_mha, 
                 "dropout_ff"           : self.dropout_ff, 
                 "skip_connect"         : self.skip_connect, 
-                "layer_norm"           : self.layer_norm, 
+                "pre_layer_norm"       : self.pre_layer_norm, 
+                "post_layer_norm"      : self.post_layer_norm, 
                 "use_causal_mask"      : self.use_causal_mask, 
                 "activation"           : self.activation,
+                "leakyrelu_gradient"   : self.leakyrelu_gradient,
                 "_self_att_block"      : tf.keras.layers.serialize(self._self_att_block),
                 "_cross_att_block"     : tf.keras.layers.serialize(self._cross_att_block),
             })
@@ -647,7 +669,7 @@ class DecoderBlock(CustomLayer) :
 class EncoderBlock(CustomLayer) :
 
 
-    def __init__(self, ndim_out:int, num_heads:int, ndim_hidden_mha:int, ndim_hidden_ff:int, num_hidden_layers_ff:int=1, dropout_mha:float=0, dropout_ff:float=0, skip_connect:bool=True, layer_norm:bool=True, use_causal_mask:bool=False, activation:str="relu", _att_block:AttentionBlock=None, **kwargs) :
+    def __init__(self, ndim_out:int, num_heads:int, ndim_hidden_mha:int, ndim_hidden_ff:int, num_hidden_layers_ff:int=1, dropout_mha:float=0, dropout_ff:float=0, skip_connect:bool=True, pre_layer_norm:bool=True, post_layer_norm:bool=False, use_causal_mask:bool=False, activation:str="leakyrelu", leakyrelu_gradient:float=0.1, _att_block:AttentionBlock=None, **kwargs) :
         """
         A keras layer for applying a multi-head self-attention and feed-forward block to a sequence.
 
@@ -677,14 +699,20 @@ class EncoderBlock(CustomLayer) :
             >  skip_connect, bool, default=True
                Whether to use skip-connections in both the multi-head attention and feed-forward blocks
 
-            >  layer_norm, bool, default=True
-               Whether to use layer normalisation in both the multi-head attention and feed-forward blocks
+            >  pre_layer_norm, bool, default=True
+               Whether to use input layer normalisation in both the multi-head attention and feed-forward blocks
+
+            >  post_layer_norm, bool, default=False
+               Whether to use output layer normalisation in both the multi-head attention and feed-forward blocks
 
             >  use_causal_mask, bool, default=False
                Whether to apply a causal mask in the multi-head attention block
 
-            >  activation, str, default="relu"
+            >  activation, str, default="leakyrelu"
                Activation function for non-linear layers
+
+            >  leakyrelu_gradient, float, default=0.1
+               Gradient for the negative side of the leakyrelu function
 
             >  _att_block, AttentionBlock, default=None
                Pre-existing AttentionBlock layer, perhaps deserialised after loading from file
@@ -701,17 +729,19 @@ class EncoderBlock(CustomLayer) :
         self.dropout_mha          = dropout_mha
         self.dropout_ff           = dropout_ff
         self.skip_connect         = skip_connect
-        self.layer_norm           = layer_norm
+        self.pre_layer_norm       = pre_layer_norm
+        self.post_layer_norm      = post_layer_norm
         self.use_causal_mask      = use_causal_mask
         self.activation           = activation
+        self.leakyrelu_gradient   = leakyrelu_gradient
         
         ##  Create keras layers
         base_name = self.name
         if _att_block : 
             self._att_block = _att_block
         else : 
-            self._att_block = AttentionBlock  (name=f"{base_name}_attention_block", ndim_out=ndim_out, ndim_hidden=ndim_hidden_mha, dropout=dropout_mha, skip_connect=skip_connect, layer_norm=layer_norm, dtype=self.dtype, num_heads=num_heads, use_causal_mask=use_causal_mask, self_attention=True)
-        self._ff_block      = FeedForwardBlock(name=f"{base_name}_feedfwd_block"  , ndim_out=ndim_out, ndim_hidden=ndim_hidden_ff , dropout=dropout_ff , skip_connect=skip_connect, layer_norm=layer_norm, dtype=self.dtype, batch_norm=False, activation=activation, num_hidden_layers=num_hidden_layers_ff)
+            self._att_block = AttentionBlock  (name=f"{base_name}_attention_block", ndim_out=ndim_out, ndim_hidden=ndim_hidden_mha, dropout=dropout_mha, skip_connect=skip_connect, pre_layer_norm=pre_layer_norm, post_layer_norm=post_layer_norm, dtype=self.dtype, num_heads=num_heads, use_causal_mask=use_causal_mask, self_attention=True)
+        self._ff_block      = FeedForwardBlock(name=f"{base_name}_feedfwd_block"  , ndim_out=ndim_out, ndim_hidden=ndim_hidden_ff , dropout=dropout_ff , skip_connect=skip_connect, pre_layer_norm=pre_layer_norm, post_layer_norm=post_layer_norm, dtype=self.dtype, batch_norm=False, activation=activation, leakyrelu_gradient=leakyrelu_gradient, num_hidden_layers=num_hidden_layers_ff)
                     
 
         
@@ -763,9 +793,11 @@ class EncoderBlock(CustomLayer) :
                 "dropout_mha"          : self.dropout_mha, 
                 "dropout_ff"           : self.dropout_ff, 
                 "skip_connect"         : self.skip_connect, 
-                "layer_norm"           : self.layer_norm, 
+                "pre_layer_norm"       : self.pre_layer_norm, 
+                "post_layer_norm"      : self.post_layer_norm, 
                 "use_causal_mask"      : self.use_causal_mask, 
                 "activation"           : self.activation,
+                "leakyrelu_gradient"   : self.leakyrelu_gradient,
                 "_att_block"           : tf.keras.layers.serialize(self._att_block),
             })
         return config
@@ -862,8 +894,8 @@ class Enumerate(CustomLayer) :
 ##
 class FeedForwardBlock(CustomLayer) :
 
-    def __init__(self, ndim_out:int, ndim_hidden:int, num_hidden_layers:int=1, dropout:float=0, activation='relu', activation_out='linear', 
-                 skip_connect:bool=False, layer_norm:bool=False, batch_norm:bool=True, **kwargs) :
+    def __init__(self, ndim_out:int, ndim_hidden:int, num_hidden_layers:int=1, dropout:float=0, activation='leakyrelu', activation_out='linear', 
+                 leakyrelu_gradient:float=0.1, skip_connect:bool=False, pre_layer_norm:bool=False, post_layer_norm:bool=False, batch_norm:bool=True, **kwargs) :
         '''
         class FeedForwardBlock
 
@@ -886,36 +918,44 @@ class FeedForwardBlock(CustomLayer) :
             >  dropout, float, default=0
                Dropout rate, if <=0 then no dropout is applied
 
-            >  activation, str, default='relu'
+            >  activation, str, default='leakyrelu'
                Activation function for the hidden layers
 
             >  activation_out, str, default='linear'
                Activation function for the output layers
 
+            >  leakyrelu_gradient, float, default=0.1
+               Gradient of the leakyrelu activation function
+
             >  skip_connect, bool, default=False
                Whether to apply skip connection between the input and output; only possible when ndim_out is equal to the input size, or
                when they can be broadcast to the same size (warning: check that output size is what you expect!)
 
-            >  layer_norm, bool, default=False
-               Whether to apply layer normalisation after the skip connection
+            >  pre_layer_norm, bool, default=False
+               Whether to apply layer normalisation on the inputs
+
+            >  post_layer_norm, bool, default=False
+               Whether to apply layer normalisation on the outputs
 
             >  batch_norm, bool, default=True
-               Whether to apply batch normalisation after the hidden afters
+               Whether to apply batch normalisation on the outputs
         '''
 
         ##  Base class contructor
         super().__init__(**kwargs)
 
         ##  Store all arguments provided to __init__, as these will be needed to implement model saving through the get_config() method
-        self.ndim_out          = ndim_out
-        self.ndim_hidden       = ndim_hidden
-        self.num_hidden_layers = num_hidden_layers
-        self.dropout           = dropout
-        self.activation        = activation
-        self.activation_out    = activation_out
-        self.skip_connect      = skip_connect
-        self.layer_norm        = layer_norm
-        self.batch_norm        = batch_norm
+        self.ndim_out           = ndim_out
+        self.ndim_hidden        = ndim_hidden
+        self.num_hidden_layers  = num_hidden_layers
+        self.dropout            = dropout
+        self.activation         = activation
+        self.activation_out     = activation_out
+        self.leakyrelu_gradient = leakyrelu_gradient
+        self.skip_connect       = skip_connect
+        self.pre_layer_norm     = pre_layer_norm
+        self.post_layer_norm    = post_layer_norm
+        self.batch_norm         = batch_norm
 
         ##  Create keras sublayers
         self.initialise_layers()
@@ -928,10 +968,12 @@ class FeedForwardBlock(CustomLayer) :
         y = x
         y = self._dense_block(y, training=training)
         y = self._dense_out  (y, training=training)
+        if self._leakyrelu_out is not None :
+            y = self._leakyrelu_out(y)
         if self.skip_connect : 
             x_dims, y_dims = x.shape[-1], y.shape[-1]
             if x_dims != y_dims : raise RuntimeError(f"Cannot apply skip-connection combining tensors of different dimensions {x_dims} and {y_dims}")
-            y = self._average([x, y], training=training)
+            y = self._add([x, y], training=training)
         return y
 
 
@@ -950,15 +992,17 @@ class FeedForwardBlock(CustomLayer) :
         config = super().get_config()
         config.update(
             {
-                "ndim_out"          : self.ndim_out, 
-                "ndim_hidden"       : self.ndim_hidden, 
-                "num_hidden_layers" : self.num_hidden_layers,
-                "dropout"           : self.dropout, 
-                "activation"        : self.activation, 
-                "activation_out"    : self.activation_out, 
-                "skip_connect"      : self.skip_connect,
-                "layer_norm"        : self.layer_norm,
-                "batch_norm"        : self.batch_norm,
+                "ndim_out"           : self.ndim_out, 
+                "ndim_hidden"        : self.ndim_hidden, 
+                "num_hidden_layers"  : self.num_hidden_layers,
+                "dropout"            : self.dropout, 
+                "activation"         : self.activation, 
+                "activation_out"     : self.activation_out, 
+                "leakyrelu_gradient" : self.leakyrelu_gradient, 
+                "skip_connect"       : self.skip_connect,
+                "pre_layer_norm"     : self.pre_layer_norm,
+                "post_layer_norm"    : self.post_layer_norm,
+                "batch_norm"         : self.batch_norm,
             })
         return config
 
@@ -968,17 +1012,28 @@ class FeedForwardBlock(CustomLayer) :
         Create new sublayer objects using their default initialisers
         '''
         dtype, base_name, dense_block_layers = self.dtype, self.name, []
+        if self.pre_layer_norm  :
+            dense_block_layers.append(LayerNormalization(dtype=dtype, name=f"{base_name}_pre_layer_norm"))
         for l_idx in range(self.num_hidden_layers) :
-            dense_block_layers.append(Dense(self.ndim_hidden, dtype=dtype, name=f"{base_name}_dense_hidden_{l_idx+1}", activation=self.activation))
-            if self.batch_norm : 
-                dense_block_layers.append(BatchNormalization(dtype=dtype, name=f"{base_name}_batch_norm_{l_idx+1}"))
-            if self.layer_norm  :
-                dense_block_layers.append(LayerNormalization(dtype=dtype, name=f"{base_name}_layer_norm_{l_idx+1}"))
+            if self.activation.lower() == "leakyrelu" :
+                dense_block_layers.append(Dense(self.ndim_hidden, dtype=dtype, name=f"{base_name}_dense_hidden_{l_idx+1}", activation="linear"))
+                dense_block_layers.append(LeakyReLU(self.leakyrelu_gradient, name=f"{base_name}_leakyrelu_{l_idx+1}"))
+            else :
+                dense_block_layers.append(Dense(self.ndim_hidden, dtype=dtype, name=f"{base_name}_dense_hidden_{l_idx+1}", activation=self.activation))
             if self.dropout > 0 :
                 dense_block_layers.append(Dropout(self.dropout, dtype=dtype, name=f"{base_name}_dropout_{l_idx+1}"))
         self._dense_block  = Sequential(dense_block_layers, name=f"{base_name}_dense_block")
-        self._dense_out    = Dense     (self.ndim_out, dtype=dtype, name=f"{base_name}_dense_out", activation=self.activation_out)
-        self._average      = Average   (dtype=dtype, name=f"{base_name}_average") if self.skip_connect else None
+        if self.activation_out.lower() == "leakyrelu" :
+            self._dense_out     = Dense(self.ndim_out, dtype=dtype, name=f"{base_name}_dense_out", activation="linear")
+            self._leakyrelu_out = LeakyReLU(self.leakyrelu_gradient, name=f"{base_name}_leakyrelu_out")
+        else :
+            self._dense_out     = Dense(self.ndim_out, dtype=dtype, name=f"{base_name}_dense_out", activation=self.activation_out)
+            self._leakyrelu_out = None
+        self._add = Add(dtype=dtype, name=f"{base_name}_add") if self.skip_connect else None
+        if self.batch_norm : 
+            dense_block_layers.append(BatchNormalization(dtype=dtype, name=f"{base_name}_batch_norm"))
+        if self.post_layer_norm  :
+            dense_block_layers.append(LayerNormalization(dtype=dtype, name=f"{base_name}_post_layer_norm"))
 
 
 
@@ -1706,8 +1761,8 @@ class MaskedSparseCategoricalCrossentropy(MaskedMetric) :
 ##
 class MetricRecord(Callback) :
     
-    def __init__(self, batch_frequency:int, val_input, val_output, label:str="Partial\nval. loss", func=None, num_bootstrap:int=-1, 
-                 plot_on_train_end:bool=False, plot_on_epoch_end:bool=False, plot_frequency:int=-1, yscale:str="log", 
+    def __init__(self, batch_frequency:int, data_input, data_output, validation_data=None, label:str="Partial\nval. loss", func=None, 
+                 num_bootstrap:int=-1, plot_on_train_end:bool=False, plot_on_epoch_end:bool=False, plot_frequency:int=-1, yscale:str="log", 
                  logger=None, log_lvl:int=logging.DEBUG) :
         """
         class MetricRecord
@@ -1719,11 +1774,14 @@ class MetricRecord(Callback) :
             >  batch_frequency, int
                Batch frequency with which to measure layer activations
                
-            >  val_input, Tensor
-               Validation datapoints
+            >  data_input, Tensor
+               Truth inputs
                
-            >  val_output, Tensor
-               True datapoint labels
+            >  data_output, Tensor
+               Truth labels
+
+            >  validation_data, (Tensor, Tensor), default=None
+               Optional validation data
 
             >  label, str, default='Partial\\nval. loss'
                Label of function to be tracked
@@ -1758,39 +1816,50 @@ class MetricRecord(Callback) :
         super().__init__()
         
         ##  Store arguments
-        self.batch_frequency    = batch_frequency
-        self.val_input          = val_input
-        self.val_output         = val_output
-        self.label              = label
-        self.func               = func
-        self.num_bootstrap      = num_bootstrap
-        self.plot_on_train_end  = plot_on_train_end
-        self.plot_on_epoch_end  = plot_on_epoch_end
-        self.plot_frequency     = plot_frequency
-        self.yscale             = yscale
-        self.logger             = logger
-        self.log_lvl            = log_lvl
+        self.batch_frequency   = batch_frequency
+        self.data_input        = data_input
+        self.data_output       = data_output
+        self.validation_data   = validation_data
+        self.label             = label
+        self.func              = func
+        self.num_bootstrap     = num_bootstrap
+        self.plot_on_train_end = plot_on_train_end
+        self.plot_on_epoch_end = plot_on_epoch_end
+        self.plot_frequency    = plot_frequency
+        self.yscale            = yscale
+        self.logger            = logger
+        self.log_lvl           = log_lvl
         
         ##  Initialise containers and variables
-        self.batch_indices = []
-        self.epoch_starts  = []
-        self.values        = []
-        self.values_11pct  = []
-        self.values_50pct  = []
-        self.values_89pct  = []
-        self.batch_offset  = 0
+        self.batch_indices    = []
+        self.epoch_starts     = []
+        self.values           = []
+        self.values_11pct     = []
+        self.values_50pct     = []
+        self.values_89pct     = []
+        self.val_values       = []
+        self.val_values_11pct = []
+        self.val_values_50pct = []
+        self.val_values_89pct = []
+        self.batch_offset     = 0
 
         ##  Initialise the bootstrap weights
-        self.bootstrap_weights = None
+        self.bootstrap_indices = None
         if num_bootstrap > 0 :
-            num_data = len(val_output)
+            num_data = len(data_output)
             self.bootstrap_indices = np.random.choice(num_data, size=(num_bootstrap, num_data))
+
+        ##  Initialise bootstrap weights for validation data
+        self.val_bootstrap_indices = None
+        if num_bootstrap > 0 and validation_data is not None :
+            num_data = len(validation_data[1])
+            self.val_bootstrap_indices = np.random.choice(num_data, size=(num_bootstrap, num_data))
 
         
     def on_batch_end(self, batch_idx:int, logs:dict=None) :
         """
         Processing to be run at the end of each batch.
-        With the given batch frequency, we pass self.val_input through the model and measure the loss.
+        With the given batch frequency, we pass self.data_input through the model and measure the loss.
         
         Inputs:
         
@@ -1803,41 +1872,13 @@ class MetricRecord(Callback) :
         if (batch_idx == 0) or ((batch_idx+1) % self.batch_frequency != 0) : return
         
         ##  Store the batch index, using self.batch_offset to ensure continuation over epochs
-        batch_idx += self.batch_offset
-        self.batch_indices.append(batch_idx)
-        
-        ##  Calculate + store the loss
-        x          = self.val_input
-        y, y_pred  = self.val_output, self.model(x, training=False)
-        batch_vals = self.func(y=y, y_pred=y_pred).numpy()
-        if len(batch_vals.shape) == 2 and batch_vals.shape[-1] == 1 : batch_vals = batch_vals[:,0]
-        value = np.mean(batch_vals)
-        self.values.append(value)
+        offset_batch_idx = batch_idx + self.batch_offset
+        self.batch_indices.append(offset_batch_idx)
 
-        ##  Find std dev on loss using bootstraps if configured
-        v11, v89 = None, None
-        if self.num_bootstrap > 0 : 
-
-            ##  Do bootstraps
-            bs_vals = []
-            for bootstrap_indices in self.bootstrap_indices :
-                x       = [tf.gather(xp, bootstrap_indices) for xp in self.val_input] if type(self.val_input) is list else tf.gather(self.val_input, bootstrap_indices)
-                y       = tf.gather(self.val_output, bootstrap_indices)
-                y_pred  = self.model(x, training=False)
-                batch_vals = self.func(y=y, y_pred=y_pred).numpy()
-                if len(batch_vals.shape) == 2 and batch_vals.shape[-1] == 1 : batch_vals = batch_vals[:,0]
-                bs_vals.append(np.mean(batch_vals))
-
-            ##  Store std dev
-            v11, v50, v89 = np.percentile(bs_vals, [11, 50, 89])
-            self.values_11pct.append(v11)
-            self.values_50pct.append(v50)
-            self.values_89pct.append(v89)
-
-        ##  Log if configured
-        if self.logger :
-            flat_label = self.label.replace('\n',' ')
-            self.logger.log(self.log_lvl, f"Metric {flat_label} after {batch_idx} batches is {value:.5}{f' [68% @ {v11:.5} - {v89:.5}]' if v11 else ''}")
+        ##  Update values
+        self.update_values(offset_batch_idx, self.data_input, self.data_output, self.bootstrap_indices)
+        if self.validation_data is not None :
+            self.update_values(offset_batch_idx, self.validation_data[0], self.validation_data[1], self.val_bootstrap_indices, validation=True)
 
         ##  Plot if configured
         if batch_idx > 0 and self.plot_frequency > 0 and ((batch_idx+1) % self.plot_frequency == 0) :
@@ -1889,12 +1930,16 @@ class MetricRecord(Callback) :
             self.func = self.model.loss
         
         ##  Initialise containers
-        self.batch_indices = []
-        self.epoch_starts  = []
-        self.values        = []
-        self.values_11pct  = []
-        self.values_50pct  = []
-        self.values_89pct  = []
+        self.batch_indices    = []
+        self.epoch_starts     = []
+        self.values           = []
+        self.values_11pct     = []
+        self.values_50pct     = []
+        self.values_89pct     = []
+        self.val_values       = []
+        self.val_values_11pct = []
+        self.val_values_50pct = []
+        self.val_values_89pct = []
     
     
     def on_train_end(self, logs:dict=None) :
@@ -1937,7 +1982,6 @@ class MetricRecord(Callback) :
         ax1 = fig.add_subplot(2, 1, 1)
         ax1.tick_params(axis="both", which="both", top=True, right=True, direction="in")
         ax1.grid(which="both")
-        #ax1.xaxis.set_ticklabels([])
         ax1.set_yscale(self.yscale)
         if self.yscale == "log" :
             ax1.set_ylabel(f"{self.label}\n[log]", ha="right", fontsize=14, labelpad=20, rotation=0)
@@ -1945,34 +1989,29 @@ class MetricRecord(Callback) :
             ax1.set_ylabel(f"{self.label}\n[linear]", ha="right", fontsize=14, labelpad=20, rotation=0)
         ax1.set_xlabel("Batch index", va="top", fontsize=14, labelpad=20)
 
-        ##  Create and format lower axes for log y-axis
-        #ax2 = fig.add_subplot(2, 1, 2)
-        #ax2.tick_params(axis="both", which="both", top=True, right=True, direction="in")
-        #ax2.set_yscale("log")
-        #ax2.grid(which="both")
-
-        #ax2.set_ylabel(f"{self.label}\n[log]", ha="right", fontsize=14, labelpad=20, rotation=0)
-        #ax2.set_xlabel("Batch index", va="top", fontsize=14, labelpad=20)
-
         ##  Pull data as np arrays
-        x, y, y_lo, y_mid, y_hi = self.batch_indices, self.values, self.values_11pct, self.values_50pct, self.values_89pct
-        x, y, y_lo, y_mid, y_hi = np.array(x), np.array(y), np.array(y_lo), np.array(y_mid), np.array(y_hi)
+        x    , y    , y_lo    , y_mid    , y_hi     = np.array(self.batch_indices), np.array(self.values    ), np.array(self.values_11pct    ), np.array(self.values_50pct    ), np.array(self.values_89pct    )
+        val_x, val_y, val_y_lo, val_y_mid, val_y_hi = np.array(self.batch_indices), np.array(self.val_values), np.array(self.val_values_11pct), np.array(self.val_values_50pct), np.array(self.val_values_89pct)
 
-        ##  Plot loss curves
-        ax1.plot(x, y, "x-", lw=2, c="k")
-        #ax2.plot(x, y, "x-", lw=2, c="k")
+        ##  Plot metric curve
+        ax1.plot(x, y, "x-", lw=2.5, c="k", label="metric")
 
         ##  If we have calculated std then use to plot error band
         if len(y_lo) :
             ax1.fill_between(x, y_lo , y_mid, lw=0, fc="darkblue", alpha=0.3)
-            ax1.fill_between(x, y_mid, y_hi , lw=0, fc="darkred" , alpha=0.3)
-            #ax2.fill_between(x, y_lo , y_mid, lw=0, fc="darkblue", alpha=0.3)
-            #ax2.fill_between(x, y_mid, y_hi , lw=0, fc="darkred" , alpha=0.3)
+            ax1.fill_between(x, y_mid, y_hi , lw=0, fc="darkblue", alpha=0.3)
+
+        ##  Plot validation curve
+        if len(val_y) :
+            ax1.plot(val_x, val_y, "X--", lw=1, c="darkred", label="validation")
+            if len(y_lo) :
+                ax1.fill_between(val_x, val_y_lo , val_y_mid, lw=0, fc="darkred", alpha=0.3)
+                ax1.fill_between(val_x, val_y_mid, val_y_hi , lw=0, fc="darkred", alpha=0.3)
+            ax1.legend(bbox_to_anchor=(1.05, 1), frameon=False, fontsize=11)
         
         ##  Plot vertical lines at epoch transitions
         for epoch_start in self.epoch_starts :
             ax1.axvline(epoch_start-0.5, ls="-", lw=2, c="k")
-            #ax2.axvline(epoch_start-0.5, ls="-", lw=2, c="k")
 
         ##  Save plot
         if savefig :
@@ -1985,6 +2024,55 @@ class MetricRecord(Callback) :
         ##  Close plot
         if close :
             plt.close(fig)
+
+
+    def update_values(self, batch_idx, x, y, bootstrap_indices=None, validation:bool=False) :
+        """
+        """
+        
+        ##  Calculate + store the loss
+        y_pred = self.model(x, training=False)
+        if type(y_pred) in [list, set, tuple] :
+            y_pred = y_pred[0]
+        batch_vals = self.func(y=y, y_pred=y_pred).numpy()
+        if len(batch_vals.shape) == 2 and batch_vals.shape[-1] == 1 : batch_vals = batch_vals[:,0]
+        value = np.mean(batch_vals)
+        if validation :
+            self.val_values.append(value)
+        else :
+            self.values.append(value)
+
+        ##  Find std dev on loss using bootstraps if configured
+        v11, v89 = None, None
+        if bootstrap_indices is not None : 
+
+            ##  Do bootstraps
+            bs_vals = []
+            for indcs in bootstrap_indices :
+                x_bs       = [tf.gather(xp, indcs) for xp in x] if type(x) is list else tf.gather(x, indcs)
+                y_bs       = tf.gather(y, indcs)
+                y_pred_bs  = self.model(x_bs, training=False)
+                if type(y_pred_bs) in [list, set, tuple] :
+                    y_pred_bs = y_pred_bs[0]
+                batch_vals = self.func(y=y_bs, y_pred=y_pred_bs).numpy()
+                if len(batch_vals.shape) == 2 and batch_vals.shape[-1] == 1 : batch_vals = batch_vals[:,0]
+                bs_vals.append(np.mean(batch_vals))
+
+            ##  Store std dev
+            v11, v50, v89 = np.percentile(bs_vals, [11, 50, 89])
+            if validation :
+                self.val_values_11pct.append(v11)
+                self.val_values_50pct.append(v50)
+                self.val_values_89pct.append(v89)
+            else :
+                self.values_11pct.append(v11)
+                self.values_50pct.append(v50)
+                self.values_89pct.append(v89)
+
+        ##  Log if configured
+        if self.logger :
+            flat_label = self.label.replace('\n',' ') + (' (validation)' if validation else '')
+            self.logger.log(self.log_lvl, f"Metric {flat_label} after {batch_idx} batches is {value:.5}{f' [68% @ {v11:.5} - {v89:.5}]' if v11 else ''}")
 
 
 
