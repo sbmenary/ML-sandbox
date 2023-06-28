@@ -13,10 +13,11 @@ import tensorflow as tf
 
 from collections.abc import Callable
 
-from matplotlib                  import pyplot as plt
-from tensorflow.keras.callbacks  import Callback, EarlyStopping, LambdaCallback, ModelCheckpoint
-from tensorflow.keras.models     import Model
-from tensorflow.keras.optimizers import Adam
+from matplotlib                         import pyplot as plt
+from tensorflow.keras.callbacks         import Callback, EarlyStopping, LambdaCallback, ModelCheckpoint
+from tensorflow.keras.models            import Model
+from tensorflow.keras.optimizers.legacy import Adam
+from tensorflow.keras.optimizers        import AdamW
 
 from .config       import Config
 from .data         import RandomDataGenerator_Addition, TokenTransform
@@ -42,35 +43,34 @@ logger  = logging.getLogger(__name__)
 DEFAULT_CONFIG = {
     "global" : {
         "base_seed"        : -1,
-        "working_dir"      : "working_dir_[problem_tag]_[model_tag]_[date]",
-        "problem_tag"      : "baseline",
-        "model_tag"        : "baseline",
+        "working_dir"      : "SSL_loopy_enc_dec_notebook_[global>problem_tag]_embed[model>ndim_embedding]_enc_[model>encoder>num_blocks]blocks_[model>encoder>num_loops]loops_width[model>encoder>ndim_ff_hidden]_dec_[model>decoder>num_blocks]blocks_[model>decoder>num_loops]loops_width[model>decoder>ndim_ff_hidden]_post[model>post_decoder>num_layers]_width[model>post_decoder>ndim]_idem[model>idempotent_size]_[date]",
+        "problem_tag"      : "int1234_num1245",
         "log_lvl_iostream" : logging.INFO,
         "log_lvl_fstream"  : logging.DEBUG,
     },
     "data" : {
         "train_data" : {
-            "int_lengths"      : [1, 2, 3],
-            "num_ints"         : [1, 2, 4],
+            "int_lengths"      : [1, 2, 3, 4],
+            "num_ints"         : [1, 2, 4, 5],
             "batch_size"       : 32,
-            "num_batches"      : 4000,
-            "gen_base_seed"    : 100,
+            "num_batches"      : 2000,
+            "gen_base_seed"    : 104,
             "gen_reproducible" : False, 
         },
         "val_data" : {
-            "int_lengths"      : [1, 2, 3],
+            "int_lengths"      : [1, 2, 3, 4],
             "num_ints"         : [3],
             "batch_size"       : 32,
-            "num_batches"      : 500,
-            "gen_base_seed"    : 101,
+            "num_batches"      : 50,
+            "gen_base_seed"    : 105,
             "gen_reproducible" : True,
         },
         "test_data" : {
-            "int_lengths"      : [4],
-            "num_ints"         : [3],
+            "int_lengths"      : [1, 2, 3, 4],
+            "num_ints"         : [6],
             "batch_size"       : 32,
-            "num_batches"      : 1000,
-            "gen_base_seed"    : 102,
+            "num_batches"      : 100,
+            "gen_base_seed"    : 106,
             "gen_reproducible" : True,
         },
         "characters"              : ['M', 'B', 'E', 'N', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '+', '-'],
@@ -85,44 +85,52 @@ DEFAULT_CONFIG = {
         "name"                  : "mathsformer_LLM",
         "dtype"                 : "float32",
         "dropout"               : 0.1,
-        "learning_rate"         : 1e-3,
         "jit_compile"           : False,
+        "use_old_loss"          : True,
+        "optimizer"             : AdamW,
+        "optimizer_args"        : {"learning_rate":1e-4, "weight_decay":2e-2},
+        "idempotent_size"       : 2,
         "positional_encoding" : {
-            "num_freqs"         : 16,
+            "num_freqs"         : 64,
             "min_period"        : 4,
-            "max_period"        : 250,
+            "max_period"        : 1000,
+            "learnable"         : True,
         },
-        "ndim_embedding"        : 32,
-        "comb_type"             : 'average',
-        "pre_encoder"           : {
-            "num_layers"        : -1,
-            "ndim"              : 128,
-            "skip_connect"      : True,
-        },
-        "pre_decoder" : {
-            "num_layers"        : -1,
-            "ndim"              : 128,
-            "skip_connect"      : True,
+        "ndim_embedding"        : 128,
+        "comb_type"             : 'mixture',
+        "pre_encoder" : {
+            "num_blocks"           : -1,
+            "num_loops"            : 1,
+            "num_heads"            : 8,
+            "ndim"                 : 128,
+            "ndim_att_hidden"      : 128,
+            "ndim_ff_hidden"       : 512,
+            "skip_connect"         : True,
+            "mixture_skip_connect" : True,
         },
         "encoder" : {
-            "num_blocks"        : 5,
-            "num_heads"         : 8,
-            "ndim"              : 32,
-            "ndim_att_hidden"   : 32,
-            "ndim_ff_hidden"    : 128,
-            "skip_connect"      : True,
+            "num_blocks"           : 2,
+            "num_loops"            : 4,
+            "num_heads"            : 8,
+            "ndim"                 : 128,
+            "ndim_att_hidden"      : 128,
+            "ndim_ff_hidden"       : 512,
+            "skip_connect"         : True,
+            "mixture_skip_connect" : True,
         },
         "decoder" : {
-            "num_blocks"        : 5,
-            "num_heads"         : 8,
-            "ndim"              : 32,
-            "ndim_att_hidden"   : 32,
-            "ndim_ff_hidden"    : 128,
-            "skip_connect"      : True,
+            "num_blocks"           : 3,
+            "num_loops"            : 1,
+            "num_heads"            : 8,
+            "ndim"                 : 128,
+            "ndim_att_hidden"      : 128,
+            "ndim_ff_hidden"       : 512,
+            "skip_connect"         : True,
+            "mixture_skip_connect" : True,
         },
         "post_decoder" : {
             "num_layers"        : 3,
-            "ndim"              : 128,
+            "ndim"              : 512,
         },
     },
     "training" : {
@@ -135,8 +143,8 @@ DEFAULT_CONFIG = {
         "early_stopping" : {
             "do"                   : True,
             "patience"             : 6,
-            "monitor"              : "val_masked_accuracy",
-            "mode"                 : "max",
+            "monitor"              : "loss",
+            "mode"                 : "min",
             "restore_best_weights" : True,
         },
         "model_checkpoint" : {
@@ -144,21 +152,25 @@ DEFAULT_CONFIG = {
             "filename" : "model_checkpoint_epoch{epoch}_val_loss_{val_loss:.5}.keras",
         },
         "layer_weights_record" : {
-            "do"               : True,
-            "batch_frequency"  : 4000,
+            "do"               : False,
+            "batch_frequency"  : 2000,
             "recursive"        : True,
         },
         "adaptive_learning_rate" : {
             "do"                 : True,
-            "decay_factor"       : 0.3,
+            "decay_factor"       : 0.2,
             "monitor"            : "loss",
             "mode"               : "min",
             "patience"           : 2,
             "log_lvl"            : logging.DEBUG,
         },
+        "print_tables_during_training" : {
+            "do"        : True,
+            "num_print" : 10,
+        },
     },
     "evaluate" : {
-        "num_print"            : 20,
+        "num_print"            : 50,
         "save_model"           : True,
         "plot_weights"         : False,
         "plot_training_curves" : True,
@@ -254,7 +266,7 @@ def create_tensor_dataset(token_transform, max_int:int, negative_char:str='-', i
     return data_X, data_Y_in, data_Y_out
 
 
-def create_text_to_text_model_from_config(cfg_model:Config, token_transform:TokenTransform) :
+def create_text_to_text_model_from_config(cfg_model, token_transform) :
     """
     Create a text-to-text transformer model
     
@@ -267,44 +279,49 @@ def create_text_to_text_model_from_config(cfg_model:Config, token_transform:Toke
            Tokeniser
     """
     return create_text_to_text_model(
-                          vocab_length                = token_transform.vocab_length, 
-                          name                        = cfg_model["name"],
-                          do_compile                  = True,
-                          use_old_loss                = cfg_model["use_old_loss"],
-                          dtype_in                    = token_transform.dtype,
-                          dtype                       = cfg_model["dtype"],
-                          dropout                     = cfg_model["dropout"],
-                          jit_compile                 = cfg_model["jit_compile"],
-                          optimizer                   = cfg_model.get("optimizer", Adam),
-                          optimizer_args              = cfg_model.get("optimizer_args", {}),
-                          pos_enc_num_freqs           = cfg_model["positional_encoding"]["num_freqs"],
-                          pos_enc_min_period          = cfg_model["positional_encoding"]["min_period"],
-                          pos_enc_max_period          = cfg_model["positional_encoding"]["max_period"],
-                          pos_enc_learnable           = cfg_model["positional_encoding"]["learnable"],
-                          ndim_embedding              = cfg_model["ndim_embedding"],
-                          comb_type                   = cfg_model["comb_type"],
-                          num_pre_layers_encoder      = cfg_model["pre_encoder"]["num_layers"],
-                          ndim_pre_layers_encoder     = cfg_model["pre_encoder"]["ndim"],
-                          skip_connect_pre_encoder    = cfg_model["pre_encoder"]["skip_connect"],
-                          num_pre_layers_decoder      = cfg_model["pre_decoder"]["num_layers"],
-                          ndim_pre_layers_decoder     = cfg_model["pre_decoder"]["ndim"],
-                          skip_connect_pre_decoder    = cfg_model["pre_decoder"]["skip_connect"],
-                          num_encoder_blocks          = cfg_model["encoder"]["num_blocks"],
-                          num_encoder_loops           = cfg_model["encoder"]["num_loops"],
-                          ndim_encoder                = cfg_model["encoder"]["ndim"],
-                          skip_connect_encoder        = cfg_model["encoder"]["skip_connect"],
-                          num_heads_encoder           = cfg_model["encoder"]["num_heads"],
-                          ndim_att_hidden_encoder     = cfg_model["encoder"]["ndim_att_hidden"],
-                          ndim_ff_hidden_encoder      = cfg_model["encoder"]["ndim_ff_hidden"],
-                          num_decoder_blocks          = cfg_model["decoder"]["num_blocks"],
-                          num_decoder_loops           = cfg_model["decoder"]["num_loops"],
-                          ndim_decoder                = cfg_model["decoder"]["ndim"],
-                          skip_connect_decoder        = cfg_model["decoder"]["skip_connect"],
-                          num_heads_decoder           = cfg_model["decoder"]["num_heads"],
-                          ndim_att_hidden_decoder     = cfg_model["decoder"]["ndim_att_hidden"],
-                          ndim_ff_hidden_decoder      = cfg_model["decoder"]["ndim_ff_hidden"],
-                          num_post_layers_decoder     = cfg_model["post_decoder"]["num_layers"],
-                          ndim_post_layers_decoder    = cfg_model["post_decoder"]["ndim"],)
+                          vocab_length                    = token_transform.vocab_length, 
+                          name                            = cfg_model["name"],
+                          do_compile                      = True,
+                          use_old_loss                    = cfg_model["use_old_loss"],
+                          dtype_in                        = token_transform.dtype,
+                          dtype                           = cfg_model["dtype"],
+                          dropout                         = cfg_model["dropout"],
+                          jit_compile                     = cfg_model["jit_compile"],
+                          optimizer                       = cfg_model.get("optimizer", Adam),
+                          optimizer_args                  = cfg_model.get("optimizer_args", {}),
+                          idempotent_size                 = cfg_model["idempotent_size"],
+                          pos_enc_num_freqs               = cfg_model["positional_encoding"]["num_freqs"],
+                          pos_enc_min_period              = cfg_model["positional_encoding"]["min_period"],
+                          pos_enc_max_period              = cfg_model["positional_encoding"]["max_period"],
+                          pos_enc_learnable               = cfg_model["positional_encoding"]["learnable"],
+                          ndim_embedding                  = cfg_model["ndim_embedding"],
+                          num_preencoder_blocks           = cfg_model["pre_encoder"]["num_blocks"],
+                          num_preencoder_loops            = cfg_model["pre_encoder"]["num_loops"],
+                          ndim_preencoder                 = cfg_model["pre_encoder"]["ndim"],
+                          num_heads_preencoder            = cfg_model["pre_encoder"]["num_heads"],
+                          ndim_att_hidden_preencoder      = cfg_model["pre_encoder"]["ndim_att_hidden"],
+                          ndim_ff_hidden_preencoder       = cfg_model["pre_encoder"]["ndim_ff_hidden"],
+                          skip_connect_preencoder         = cfg_model["pre_encoder"]["skip_connect"],
+                          mixture_skip_connect_preencoder = cfg_model["pre_encoder"]["mixture_skip_connect"],
+                          num_encoder_blocks              = cfg_model["encoder"]["num_blocks"],
+                          num_encoder_loops               = cfg_model["encoder"]["num_loops"],
+                          ndim_encoder                    = cfg_model["encoder"]["ndim"],
+                          num_heads_encoder               = cfg_model["encoder"]["num_heads"],
+                          ndim_att_hidden_encoder         = cfg_model["encoder"]["ndim_att_hidden"],
+                          ndim_ff_hidden_encoder          = cfg_model["encoder"]["ndim_ff_hidden"],
+                          skip_connect_encoder            = cfg_model["encoder"]["skip_connect"],
+                          mixture_skip_connect_encoder    = cfg_model["encoder"]["mixture_skip_connect"],
+                          num_decoder_blocks              = cfg_model["decoder"]["num_blocks"],
+                          num_decoder_loops               = cfg_model["decoder"]["num_loops"],
+                          ndim_decoder                    = cfg_model["decoder"]["ndim"],
+                          num_heads_decoder               = cfg_model["decoder"]["num_heads"],
+                          ndim_att_hidden_decoder         = cfg_model["decoder"]["ndim_att_hidden"],
+                          ndim_ff_hidden_decoder          = cfg_model["decoder"]["ndim_ff_hidden"],
+                          skip_connect_decoder            = cfg_model["decoder"]["skip_connect"],
+                          mixture_skip_connect_decoder    = cfg_model["decoder"]["mixture_skip_connect"],
+                          num_post_layers_decoder         = cfg_model["post_decoder"]["num_layers"],
+                          ndim_post_layers_decoder        = cfg_model["post_decoder"]["ndim"],)
+
 
 
 
@@ -552,6 +569,86 @@ def load_text_to_text_model(fname:str) -> Model :
     
     ##  Load model and return
     return tf.keras.models.load_model(fname, custom_objects=custom_objects)
+
+
+
+def plot_token_distribution(data_gen, num_batches:int=-1, savefig:str=None, show:bool=True, 
+                            close:bool=True, dpi:int=150) :
+    """
+    Plot the distribution of tokens output by the generator provided.
+    
+    Inputs:
+    
+        >  data_gen, RandomDataGenerator_Addition
+           Data generator
+    
+        >  num_batches, int, default=-1
+           Number of batches to generate, if <1 then fall back to generator length
+           
+        >  savefig, str, default=None
+           File to save the figure to
+           
+        >  show, bool, default=True
+           Whether to call plt.show(fig)
+           
+        >  close, bool, default=True
+           Whether to call plt.close(fig)
+           
+        >  dpi, int, default=150
+           Pixel density to be passed on to fig.savefig (only relevant for particular file formats)
+    """
+    ##  Resolve the number of batches
+    if num_batches < 1 :
+        num_batches = len(data_gen)
+    
+    ##  Get sample of train data labels
+    data_gen_sample = np.concatenate([data_gen[i][1].numpy().flatten() for i in range(num_batches)])
+
+    ##  Ignore masked tokens
+    data_gen_sample = data_gen_sample[data_gen_sample != 0]
+
+    ##  Count number for each token
+    chars, freqs = [], []
+    for token, char in data_gen.token_transform.detokeniser_dict.items() :
+        chars.append(char)
+        freqs.append(len(data_gen_sample[data_gen_sample==token]))
+
+    ##  Normalise counts to frequency
+    freqs     = np.array(freqs).astype(np.float32)
+    freqs_err = np.sqrt(freqs)
+    freqs_tot = np.sum(freqs)
+    freqs     /= freqs_tot
+    freqs_err /= freqs_tot
+
+    ##  Log token frequencies
+    if logger is not None :
+        for char, freq, freq_err in zip(chars, freqs, freqs_err) :
+            logger.debug(f"Token '{char}' in data with frequency {100.*freq:.1f} +- {100.*freq_err:.1f} % (masked)")
+
+    ##  Create plot
+    fig = plt.figure(figsize=(6, 4))
+    ax  = fig.add_subplot(1, 1, 1)
+    ax.tick_params(which="both", axis="both", right=True, top=True, labelsize=10, direction="in")
+    ax.grid()
+    ax.set_xlabel("Character", fontsize=14, va="top"  , labelpad=15)
+    ax.set_ylabel("Frequency\nin data", fontsize=14, ha="right", rotation=0, labelpad=20)
+
+    ##  Plot bar chart of frequencies
+    ax.bar(chars, freqs, yerr=freqs_err)
+
+    ##  Save figure
+    if savefig is not None :
+        if logger is not None :
+            logger.info(f"Saving distribution of token frequencies to file {savefig}")
+        fig.savefig(savefig, bbox_inches="tight", dpi=dpi)
+        
+    ##  Show figure
+    if show :
+        plt.show(fig)
+        
+    ##  Close figure
+    if close :
+        plt.close(fig)
 
 
 

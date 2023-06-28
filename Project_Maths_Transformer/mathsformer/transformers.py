@@ -40,26 +40,24 @@ logger  = logging.getLogger(__name__)
 
 def create_text_to_text_model(vocab_length:int, 
                               name:str, 
-                              do_compile:bool     = True,
-                              use_old_loss:bool   = False,
-                              dtype_in            = tf.int32, 
-                              dtype               = tf.float32, 
-                              dropout:float       = 0.1, 
-                              jit_compile:bool    = None,
-                              optimizer           = Adam,
-                              optimizer_args:dict = None,
-                              pos_enc_num_freqs:int       = 32, pos_enc_min_period:float     = 5, pos_enc_max_period:float = 10000,
-                              pos_enc_learnable:bool      = False,
-                              ndim_embedding:int          = 64, comb_type:str                = "average",
-                              num_pre_layers_encoder:int  = 0 , ndim_pre_layers_encoder:int  = 512, skip_connect_pre_encoder:bool = True,
-                              num_pre_layers_decoder:int  = 0 , ndim_pre_layers_decoder:int  = 512, skip_connect_pre_decoder:bool = True,
-                              num_encoder_blocks:int      = 5 , ndim_encoder:int             = 64 , skip_connect_encoder:bool     = True,
-                              num_heads_encoder:int       = 8 , ndim_att_hidden_encoder:int  = 128, ndim_ff_hidden_encoder:int    = 128, 
-                              num_encoder_loops:int       = 1,
-                              num_decoder_blocks:int      = 5 , ndim_decoder:int             = 64 , skip_connect_decoder:bool     = True,
-                              num_heads_decoder:int       = 8 , ndim_att_hidden_decoder:int  = 128, ndim_ff_hidden_decoder:int    = 128, 
-                              num_decoder_loops:int       = 1,
-                              num_post_layers_decoder:int = 3 , ndim_post_layers_decoder:int = 512, 
+                              do_compile:bool       = True,
+                              jit_compile:bool      = None,
+                              use_old_loss:bool     = False,
+                              dtype_in              = tf.int32, 
+                              dtype                 = tf.float32, 
+                              dropout:float         = 0.1, 
+                              optimizer             = Adam,
+                              optimizer_args:dict   = None,
+                              idempotent_size:int   = -1,
+                              pos_enc_num_freqs:int = 32, pos_enc_min_period:float = 4, pos_enc_max_period:float = 500 , pos_enc_learnable:bool = False,
+                              ndim_embedding:int          = 64, comb_type:str                  = "average",
+                              num_preencoder_loops:int    = 1 , num_preencoder_blocks:int      = 5  , ndim_preencoder:int           = 64 , skip_connect_preencoder:bool = True, mixture_skip_connect_preencoder:bool = False,
+                              num_encoder_loops:int       = 1 , num_encoder_blocks:int         = 5  , ndim_encoder:int              = 64 , skip_connect_encoder:bool    = True, mixture_skip_connect_encoder:bool    = False,
+                              num_decoder_loops:int       = 1 , num_decoder_blocks:int         = 5  , ndim_decoder:int              = 64 , skip_connect_decoder:bool    = True, mixture_skip_connect_decoder:bool    = False,
+                              num_heads_preencoder:int    = 8 , ndim_att_hidden_preencoder:int = 128, ndim_ff_hidden_preencoder:int = 128, 
+                              num_heads_encoder:int       = 8 , ndim_att_hidden_encoder:int    = 128, ndim_ff_hidden_encoder:int    = 128, 
+                              num_heads_decoder:int       = 8 , ndim_att_hidden_decoder:int    = 128, ndim_ff_hidden_decoder:int    = 128, 
+                              num_post_layers_decoder:int = 3 , ndim_post_layers_decoder:int   = 512, 
                              ) :
     """
     Create a keras model for a seq-to-seq transformer
@@ -75,6 +73,7 @@ def create_text_to_text_model(vocab_length:int,
         >  name        , str: Unique name for the model (also used to derive names of layers and sublayers)
 
         >  do_compile  , bool            , default=True      : Whether to compile the model
+        >  jit_compile , bool            , default=None      : Whether to just-in-time compile the model for XLA acceleration
         >  use_old_loss, bool            , default=False     : Whether to use the old scalar loss function
         >  dtype_in    , dtype-compatible, default=tf.int32  : Data type of the input tensor
         >  dtype       , dtype-compatible, default=tf.float32: Data type of intermediate and output layers
@@ -83,6 +82,7 @@ def create_text_to_text_model(vocab_length:int,
         >  optimizer     , keras optimizer class, default=Adam                   : Keras optimizer used to compile model
         >  optimizer_args, dict                 , defualt={'learning_rate':0.001}: Keyword arguments used to initialise optimizer class
 
+        >  idempotent_size   , int  , default=-1   : Number of additional encoder loops to run, with outputs decoded in parallel for multiple loss contributions
         >  pos_enc_num_freqs , int  , default=32   : Number of frequencies used for positional encoding, which will be of length 2*pos_enc_num_freqs
         >  pos_enc_min_period, float, default=5    : Lower limit of the geometric series of wave-periods used for positional encoding
         >  pos_enc_max_period, float, default=10000: Upper limit of the geometric series of wave-periods used for positional encoding
@@ -92,27 +92,34 @@ def create_text_to_text_model(vocab_length:int,
         >  comb_type     , str, default="average": Method for combining the token embeddings and position encodings
                                                    Options are: ["add", "sum", "average", "mean", "concat", "concatenate", "mixture"]
 
-        >  num_pre_layers_encoder  , int , default=-1  : Number of layers in the pre-encoder feed-forward block (if <0 then skip entirely)
-        >  ndim_pre_layers_encoder , int , default=512 : Number of neurons per-layer in the pre-encoder feed-forward block 
-        >  skip_connect_pre_encoder, bool, default=True: Whether to apply a skip-connection across the pre-encoder feed-forward block 
-
-        >  num_pre_layers_decoder  , int , default=-1  : Number of layers in the pre-decoder feed-forward block (if <0 then skip entirely)
-        >  ndim_pre_layers_decoder , int , default=512 : Number of neurons per-layer in the pre-decoder feed-forward block 
-        >  skip_connect_pre_decoder, bool, default=True: Whether to apply a skip-connection across the pre-decoder feed-forward block 
-
-        >  num_encoder_blocks  , int , default=5   : Number of encoder blocks
-        >  ndim_encoder        , int , default=64  : Length of encoder outputs
-        >  skip_connect_encoder, bool, default=True: Whether to apply a skip-connection across the encoder's attention and feed-forward blocks 
-        >  num_encoder_loops   , int , default=1   : How many times to pass through the encoder blocks
+        >  num_preencoder_loops           , int , default=1    : How many times to loop through the pre-encoder blocks
+        >  num_preencoder_blocks          , int , default=5    : Number of pre-encoder blocks
+        >  ndim_preencoder                , int , default=64   : Length of pre-encoder outputs
+        >  skip_connect_preencoder        , bool, default=True : Whether to apply a skip-connection across the pre-encoder's attention and feed-forward blocks 
+        >  mixture_skip_connect_preencoder, bool, default=False: Whether to use a LearnableMixture skip connection in the pre-encoder
+        >  num_preencoder_loops           , int , default=1    : How many times to pass through the pre-encoder blocks
 
         >  num_heads_encoder      , int, default=8  : Number of parallel heads in each attention-block
         >  ndim_att_hidden_encoder, int, default=128: Number of neurons in the hidden dimension contracted over to compute attention weights
         >  ndim_ff_hidden_encoder , int, default=128: Number of neurons in the hidden layer of the post-attention feed-forward block
 
-        >  num_decoder_blocks  , int , default=5   : Number of decoder blocks
-        >  ndim_decoder        , int , default=64  : Length of decoder outputs
-        >  skip_connect_decoder, bool, default=True: Whether to apply a skip-connection across the decoder's attention and feed-forward blocks 
-        >  num_decoder_loops   , int , default=1   : How many times to pass through the decoder blocks
+        >  num_encoder_loops           , int , default=1    : How many times to loop through the encoder blocks
+        >  num_encoder_blocks          , int , default=5    : Number of encoder blocks
+        >  ndim_encoder                , int , default=64   : Length of encoder outputs
+        >  skip_connect_encoder        , bool, default=True : Whether to apply a skip-connection across the encoder's attention and feed-forward blocks 
+        >  mixture_skip_connect_encoder, bool, default=False: Whether to use a LearnableMixture skip connection in the encoder
+        >  num_encoder_loops           , int , default=1    : How many times to pass through the encoder blocks
+
+        >  num_heads_encoder      , int, default=8  : Number of parallel heads in each attention-block
+        >  ndim_att_hidden_encoder, int, default=128: Number of neurons in the hidden dimension contracted over to compute attention weights
+        >  ndim_ff_hidden_encoder , int, default=128: Number of neurons in the hidden layer of the post-attention feed-forward block
+
+        >  num_decoder_loops           , int , default=1    : How many times to loop through the decoder blocks
+        >  num_decoder_blocks          , int , default=5    : Number of decoder blocks
+        >  ndim_decoder                , int , default=64   : Length of decoder outputs
+        >  skip_connect_decoder        , bool, default=True : Whether to apply a skip-connection across the decoder's attention and feed-forward blocks 
+        >  mixture_skip_connect_decoder, bool, default=False: Whether to use a LearnableMixture skip connection in the decoder
+        >  num_decoder_loops           , int , default=1    : How many times to pass through the decoder blocks
 
         >  num_heads_decoder      , int, default=8  : Number of parallel heads in each attention-block
         >  ndim_att_hidden_decoder, int, default=128: Number of neurons in the hidden dimension contracted over to compute attention weights
@@ -123,7 +130,7 @@ def create_text_to_text_model(vocab_length:int,
     """
     ##  Resolve mutable default args
     if optimizer_args is None :
-        optimizer_args = {'learning_rate': 0.001}
+        optimizer_args = {'learning_rate': 1e-3}
     
     ##=============================================##
     ##===   Input layer - Output shape [B, S]   ===##
@@ -148,12 +155,8 @@ def create_text_to_text_model(vocab_length:int,
     ##=========================================================================##
     ##===  Enumerate indices for positional encoding - Output shape [B, S]  ===##
     ##=========================================================================##
-    ##  -  if comb_type will lead to broadcasting with embeddings later on, then we don't need to repeat the enumerations
-    ##     along the batch axis and can use minimal_dims=True for an ouput of [1, S] instead. This saves us memory here
-    ##     and reduces the number of operations in the positional encoding step by a factor of B
-    minimal_dims = comb_type.lower() in ["add", "sum", "average", "mean", "mixture"]
-    x_pos_enc    = Enumerate(name=f"{name}_encoder_enumerate", dtype=dtype)(x_in_enc, minimal_dims=minimal_dims)
-    x_pos_dec    = Enumerate(name=f"{name}_decoder_enumerate", dtype=dtype)(x_in_dec, minimal_dims=minimal_dims)
+    x_pos_enc = Enumerate(name=f"{name}_encoder_enumerate", dtype=dtype)(x_in_enc, minimal_dims=False)
+    x_pos_dec = Enumerate(name=f"{name}_decoder_enumerate", dtype=dtype)(x_in_dec, minimal_dims=False)
     
     ##========================================================================##
     ##===  Positional encoding - Output shape [B, S, 2*pos_enc_num_freqs]  ===##
@@ -190,31 +193,24 @@ def create_text_to_text_model(vocab_length:int,
             x_dec = LearnableMixture(name=f"{name}_decoder_emb_and_pos", dtype=dtype)([x_embed_dec, x_pos_dec])
         case _ :
             raise RuntimeError(f"comb_type '{comb_type}' not recognised, recognised keywords are {allowed_comb_types}")
-
-    ##=========================================================================##
-    ##===  Initial pre-processing - Output shape [B, S, ndim_(en/de)coder]  ===##
-    ##=========================================================================##
-    ##  - use layer_norm instead of batch_norm because elements in sequence are not independent
-    if num_pre_layers_encoder >= 0 :
-        x_enc = FeedForwardBlock(ndim_encoder, 
-                                 ndim_hidden       = ndim_pre_layers_encoder, 
-                                 num_hidden_layers = num_pre_layers_encoder, 
-                                 dropout           = dropout, 
-                                 layer_norm        = True, 
-                                 batch_norm        = False,  
-                                 skip_connect      = skip_connect_pre_encoder, 
-                                 dtype             = dtype, 
-                                 name              = f"{name}_encoder_feedfwd_block_pre_attention")(x_enc)
-    if num_pre_layers_decoder >= 0 :
-        x_dec = FeedForwardBlock(ndim_decoder, 
-                                 ndim_hidden       = ndim_pre_layers_decoder, 
-                                 num_hidden_layers = num_pre_layers_decoder, 
-                                 dropout           = dropout, 
-                                 layer_norm        = True, 
-                                 batch_norm        = False,  
-                                 skip_connect      = skip_connect_pre_decoder, 
-                                 dtype             = dtype, 
-                                 name              = f"{name}_decoder_feedfwd_block_pre_attention")(x_dec)
+    
+    ##===================================================================##
+    ##===  Pre-encoder blocks - Output shape [B, S, ndim_preencoder]  ===##
+    ##===================================================================##
+    preencoder_blocks = []
+    for layer_idx in range(num_preencoder_blocks) :
+        preencoder_blocks.append(EncoderBlock(
+                                 ndim_preencoder, 
+                                 num_heads_preencoder, 
+                                 ndim_att_hidden_preencoder, 
+                                 ndim_ff_hidden_preencoder, 
+                                 dropout_mha          = dropout, 
+                                 dtype                = dtype, 
+                                 pre_layer_norm       = True, 
+                                 post_layer_norm      = False, 
+                                 skip_connect         = skip_connect_preencoder, 
+                                 mixture_skip_connect = mixture_skip_connect_preencoder, 
+                                 name                 = f"{name}_preencoder_block_{layer_idx+1}"))
     
     ##============================================================##
     ##===  Encoder blocks - Output shape [B, S, ndim_encoder]  ===##
@@ -226,14 +222,24 @@ def create_text_to_text_model(vocab_length:int,
                                  num_heads_encoder, 
                                  ndim_att_hidden_encoder, 
                                  ndim_ff_hidden_encoder, 
-                                 dropout_mha  = dropout, 
-                                 dtype        = dtype, 
-                                 layer_norm   = True, 
-                                 skip_connect = skip_connect_encoder, 
-                                 name         = f"{name}_encoder_block_{layer_idx+1}"))
-    for _ in range(num_encoder_loops) :
+                                 dropout_mha          = dropout, 
+                                 dtype                = dtype, 
+                                 pre_layer_norm       = True, 
+                                 post_layer_norm      = False, 
+                                 skip_connect         = skip_connect_encoder, 
+                                 mixture_skip_connect = mixture_skip_connect_encoder, 
+                                 name                 = f"{name}_encoder_block_{layer_idx+1}"))
+        
+    for loop_idx in range(num_encoder_loops) :
         for encoder_block in encoder_blocks :
             x_enc = encoder_block(x_enc)
+    x_enc_list = [x_enc] 
+    ## Previously [LayerNormalization(name=f"{name}_encoder_output_norm")(x_enc)] but post-LN now irrelevant
+           
+    for loop_idx in range(idempotent_size) :
+        for encoder_block in encoder_blocks :
+            x_enc = encoder_block(x_enc)
+        x_enc_list.append(x_enc)
     
     ##============================================================##
     ##===  Decoder blocks - Output shape [B, S, ndim_decoder]  ===##
@@ -245,39 +251,44 @@ def create_text_to_text_model(vocab_length:int,
                                  num_heads_decoder, 
                                  ndim_att_hidden_decoder, 
                                  ndim_ff_hidden_decoder, 
-                                 dropout_mha  = dropout, 
-                                 dtype        = dtype, 
-                                 layer_norm   = True, 
-                                 skip_connect = skip_connect_decoder, 
-                                 name         = f"{name}_decoder_block_{layer_idx+1}"))
-    for _ in range(num_decoder_loops) :
-        for decoder_block in decoder_blocks :
-            x_dec = decoder_block([x_dec, x_enc])
+                                 dropout_mha          = dropout, 
+                                 dtype                = dtype, 
+                                 pre_layer_norm       = True, 
+                                 post_layer_norm      = False, 
+                                 skip_connect         = skip_connect_decoder, 
+                                 mixture_skip_connect = mixture_skip_connect_decoder, 
+                                 name                 = f"{name}_decoder_block_{layer_idx+1}"))
+        
+    x_dec_list = []
+    for x_enc_this in x_enc_list :
+        x_dec_this = x_dec
+        for loop_idx in range(num_decoder_loops) :
+            for decoder_block in decoder_blocks :
+                x_dec_this = decoder_block([x_dec_this, x_enc_this])
+        x_dec_list.append(x_dec_this)
         
     ##==================================================================================================##
     ##===  Predict logit probabilities using feed-forward block - Output shape [B, S, vocab_length]  ===##
     ##==================================================================================================##
     ##  - use layer_norm instead of batch_norm because elements in sequence are not independent
-    x = FeedForwardBlock(vocab_length, 
+    ff_block = FeedForwardBlock(vocab_length, 
                          ndim_hidden       = ndim_post_layers_decoder, 
                          num_hidden_layers = num_post_layers_decoder, 
                          skip_connect      = False, 
-                         layer_norm        = True, 
+                         pre_layer_norm    = True, 
+                         post_layer_norm   = False, 
                          batch_norm        = False, 
                          dtype             = dtype, 
-                         name              = f"{name}_feedfwd_block_post_attention")(x_dec)
+                         name              = f"{name}_output")
+    x_out = [ff_block(x) for x in x_dec_list]
     
     ##  Create model
-    model = Model([x_in_enc, x_in_dec], x, name=name)
+    model = Model([x_in_enc, x_in_dec], x_out if len(x_out)>1 else x_out[0], name=name)
     
     ##  Compile model with sparse categorical crossentropy loss and accuracy metric
     if do_compile :
-        if use_old_loss :
-            acc  = scalar_masked_categorical_accuracy
-            loss = scalar_masked_sparse_categorical_crossentropy
-        else :
-            acc  = MaskedCategoricalAccuracy(scalar_output=True, equal_token_weight=True, use_keras_mask=False, mask_value=0)
-            loss = MaskedSparseCategoricalCrossentropy(scalar_output=True, equal_token_weight=True, use_keras_mask=False, mask_value=0, from_logits=True)
+        acc  = MaskedCategoricalAccuracy(scalar_output=True, equal_token_weight=True, use_keras_mask=False, mask_value=0)
+        loss = MaskedSparseCategoricalCrossentropy(scalar_output=True, equal_token_weight=True, use_keras_mask=False, mask_value=0, from_logits=True)
         model.compile(loss        = loss, 
                       optimizer   = optimizer(**optimizer_args), 
                       metrics     = [acc],

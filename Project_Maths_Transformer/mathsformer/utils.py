@@ -90,7 +90,11 @@ def create_working_directory(working_dir:str, increment:bool=True, tags:dict=Non
         val = tags
         for key in tag.split(">") :
             val = val[key]
-        working_dir = working_dir.replace(f"[{tag}]", str(val).replace(".","p").replace("-","m"))
+        if type(val) is list :
+            str_val = "".join([str(v) for v in val])
+        else :
+            str_val = str(val)
+        working_dir = working_dir.replace(f"[{tag}]", str_val.replace(".","p").replace("-","m"))
 
     ##  Iterate until we find a working directory name that doesn't already exist
     trial_working_dir, version = working_dir, 1
