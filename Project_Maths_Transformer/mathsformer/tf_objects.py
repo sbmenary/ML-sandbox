@@ -356,7 +356,7 @@ class AdaptiveLearningRate(Callback) :
 class AttentionBlock(CustomLayer) :
 
     
-    def __init__(self, num_heads:int, ndim_hidden:int, ndim_out:int, dropout:float=0, self_attention:bool=False, use_causal_mask:bool=False, skip_connect:bool=True, pre_layer_norm:bool=True, post_layer_norm:bool=False, _mha:MultiHeadAttention=None, **kwargs) :
+    def __init__(self, num_heads:int, ndim_hidden:int, ndim_out:int, dropout:float=0, self_attention:bool=False, use_causal_mask:bool=False, skip_connect:bool=True, mixture_skip_connect:bool=False, pre_layer_norm:bool=True, post_layer_norm:bool=False, _mha:MultiHeadAttention=None, **kwargs) :
         '''
         class AttentionBlock
 
@@ -382,8 +382,11 @@ class AttentionBlock(CustomLayer) :
             >  use_causal_mask, bool, default=False
                If True then only attend to previous elements in the sequence
 
-            >  skip_connect , bool, default=True
+            >  skip_connect, bool, default=True
                Whether to use a skip connection
+
+            >  mixture_skip_connect, bool, default=False
+               Whether to implement skip connection using a LearnableMixture
 
             >  pre_layer_norm , bool, default=True
                Whether to use a layer normalisation on the inputs
@@ -399,21 +402,23 @@ class AttentionBlock(CustomLayer) :
         super().__init__(**kwargs)
 
         ##  Store all arguments provided to __init__, as these will be needed to implement model saving through the get_config() method
-        self.num_heads       = num_heads
-        self.ndim_hidden     = ndim_hidden
-        self.ndim_out        = ndim_out
-        self.dropout         = dropout
-        self.self_attention  = self_attention
-        self.use_causal_mask = use_causal_mask
-        self.skip_connect    = skip_connect
-        self.pre_layer_norm  = pre_layer_norm
-        self.post_layer_norm = post_layer_norm
+        self.num_heads            = num_heads
+        self.ndim_hidden          = ndim_hidden
+        self.ndim_out             = ndim_out
+        self.dropout              = dropout
+        self.self_attention       = self_attention
+        self.use_causal_mask      = use_causal_mask
+        self.skip_connect         = skip_connect
+        self.mixture_skip_connect = mixture_skip_connect
+        self.pre_layer_norm       = pre_layer_norm
+        self.post_layer_norm      = post_layer_norm
 
         ##  Create keras layers
         base_name = self.name
         if _mha : self._mha  = _mha
         else    : self._mha  = MultiHeadAttention(name=f"{base_name}_mha", num_heads=self.num_heads, key_dim=self.ndim_hidden, value_dim=self.ndim_out, dropout=self.dropout, dtype=self.dtype)
-        self._add            = Add               (name=f"{base_name}_add"            , dtype=self.dtype) if self.skip_connect    else None
+        self._mixture        = LearnableMixture  (name=f"{base_name}_mixture"        , dtype=self.dtype) if self.skip_connect and     self.mixture_skip_connect else None
+        self._add            = Add               (name=f"{base_name}_add"            , dtype=self.dtype) if self.skip_connect and not self.mixture_skip_connect else None
         self._pre_layernorm  = LayerNormalization(name=f"{base_name}_pre_layer_norm" , dtype=self.dtype) if self.pre_layer_norm  else None
         self._post_layernorm = LayerNormalization(name=f"{base_name}_post_layer_norm", dtype=self.dtype) if self.post_layer_norm else None
         
@@ -444,7 +449,8 @@ class AttentionBlock(CustomLayer) :
         if self.skip_connect : 
             q_dims, y_dims = q.shape[-1], y.shape[-1]
             if q_dims != y_dims : raise RuntimeError(f"Cannot apply skip-connection combining tensors of different dimensions {q_dims} and {y_dims}")
-            y = self._add([q, y])
+            if self.skip_connect and     self.mixture_skip_connect : y = self._mixture([q, y])
+            if self.skip_connect and not self.mixture_skip_connect : y = self._add([q, y])
         if self.post_layer_norm : y = self._post_layernorm(y, training=training)
         return y
 
@@ -479,16 +485,17 @@ class AttentionBlock(CustomLayer) :
         config = super().get_config()
         config.update(
             {
-                "num_heads"       : self.num_heads, 
-                "ndim_hidden"     : self.ndim_hidden, 
-                "ndim_out"        : self.ndim_out, 
-                "dropout"         : self.dropout, 
-                "self_attention"  : self.self_attention, 
-                "use_causal_mask" : self.use_causal_mask, 
-                "skip_connect"    : self.skip_connect, 
-                "pre_layer_norm"  : self.pre_layer_norm, 
-                "post_layer_norm" : self.post_layer_norm, 
-                "_mha"            : tf.keras.layers.serialize(self._mha),
+                "num_heads"            : self.num_heads, 
+                "ndim_hidden"          : self.ndim_hidden, 
+                "ndim_out"             : self.ndim_out, 
+                "dropout"              : self.dropout, 
+                "self_attention"       : self.self_attention, 
+                "use_causal_mask"      : self.use_causal_mask, 
+                "skip_connect"         : self.skip_connect, 
+                "mixture_skip_connect" : self.mixture_skip_connect,
+                "pre_layer_norm"       : self.pre_layer_norm, 
+                "post_layer_norm"      : self.post_layer_norm, 
+                "_mha"                 : tf.keras.layers.serialize(self._mha),
             })
         return config
 
@@ -498,7 +505,7 @@ class AttentionBlock(CustomLayer) :
         """
         Return a set of custom layers used by this class.
         """
-        return (MultiHeadAttention,)
+        return (MultiHeadAttention, LearnableMixture,)
 
 
 
@@ -510,7 +517,7 @@ class AttentionBlock(CustomLayer) :
 class DecoderBlock(CustomLayer) :
 
 
-    def __init__(self, ndim_out:int, num_heads:int, ndim_hidden_mha:int, ndim_hidden_ff:int, num_hidden_layers_ff:int=1, dropout_mha:float=0, dropout_ff:float=0, skip_connect:bool=True, pre_layer_norm:bool=True, 
+    def __init__(self, ndim_out:int, num_heads:int, ndim_hidden_mha:int, ndim_hidden_ff:int, num_hidden_layers_ff:int=1, dropout_mha:float=0, dropout_ff:float=0, skip_connect:bool=True, mixture_skip_connect:bool=False, pre_layer_norm:bool=True, 
                  post_layer_norm:bool=False, use_causal_mask:bool=True, activation:str="leakyrelu", leakyrelu_gradient:float=0.1, _self_att_block:AttentionBlock=None, _cross_att_block:AttentionBlock=None, **kwargs) :
         """
         A keras layer for applying causally-masked multi-head self-attention, followed by cross-attention to an encoded sequence
@@ -541,6 +548,9 @@ class DecoderBlock(CustomLayer) :
 
             >  skip_connect, bool, default=True
                Whether to use skip-connections in the attention and feed-forward blocks
+
+            >  mixture_skip_connect, bool, default=False
+               Whether to implement skip connections as a LearnableMixture
 
             >  pre_layer_norm, bool, default=True
                Whether to use input layer normalisation in the attention and feed-forward blocks
@@ -575,6 +585,7 @@ class DecoderBlock(CustomLayer) :
         self.dropout_mha          = dropout_mha
         self.dropout_ff           = dropout_ff
         self.skip_connect         = skip_connect
+        self.mixture_skip_connect = mixture_skip_connect
         self.pre_layer_norm       = pre_layer_norm
         self.post_layer_norm      = post_layer_norm
         self.use_causal_mask      = use_causal_mask
@@ -584,10 +595,10 @@ class DecoderBlock(CustomLayer) :
         ##  Create keras layers
         base_name = self.name
         if   _self_att_block  : self._self_att_block  = _self_att_block
-        else                  : self._self_att_block  = AttentionBlock(name=f"{base_name}_self_attention_block" , ndim_out=ndim_out, ndim_hidden=ndim_hidden_mha, dropout=dropout_mha, skip_connect=skip_connect, pre_layer_norm=pre_layer_norm, post_layer_norm=post_layer_norm, dtype=self.dtype, num_heads=num_heads, use_causal_mask=use_causal_mask, self_attention=True)
+        else                  : self._self_att_block  = AttentionBlock(name=f"{base_name}_self_attention_block" , ndim_out=ndim_out, ndim_hidden=ndim_hidden_mha, dropout=dropout_mha, skip_connect=skip_connect, mixture_skip_connect=mixture_skip_connect, pre_layer_norm=pre_layer_norm, post_layer_norm=post_layer_norm, dtype=self.dtype, num_heads=num_heads, use_causal_mask=use_causal_mask, self_attention=True)
         if   _cross_att_block : self._cross_att_block = _cross_att_block
-        else                  : self._cross_att_block = AttentionBlock(name=f"{base_name}_cross_attention_block", ndim_out=ndim_out, ndim_hidden=ndim_hidden_mha, dropout=dropout_mha, skip_connect=skip_connect, pre_layer_norm=pre_layer_norm, post_layer_norm=post_layer_norm, dtype=self.dtype, num_heads=num_heads, use_causal_mask=False, self_attention=False)
-        self._ff_block = FeedForwardBlock(name=f"{base_name}_feedfwd_block", ndim_out=ndim_out, ndim_hidden=ndim_hidden_ff, dropout=dropout_ff, skip_connect=skip_connect, pre_layer_norm=pre_layer_norm, post_layer_norm=post_layer_norm, dtype=self.dtype, batch_norm=False, activation=activation, num_hidden_layers=num_hidden_layers_ff)
+        else                  : self._cross_att_block = AttentionBlock(name=f"{base_name}_cross_attention_block", ndim_out=ndim_out, ndim_hidden=ndim_hidden_mha, dropout=dropout_mha, skip_connect=skip_connect, mixture_skip_connect=mixture_skip_connect, pre_layer_norm=pre_layer_norm, post_layer_norm=post_layer_norm, dtype=self.dtype, num_heads=num_heads, use_causal_mask=False, self_attention=False)
+        self._ff_block = FeedForwardBlock(name=f"{base_name}_feedfwd_block", ndim_out=ndim_out, ndim_hidden=ndim_hidden_ff, dropout=dropout_ff, skip_connect=skip_connect, mixture_skip_connect=mixture_skip_connect, pre_layer_norm=pre_layer_norm, post_layer_norm=post_layer_norm, dtype=self.dtype, batch_norm=False, activation=activation, num_hidden_layers=num_hidden_layers_ff)
                     
         
     def call(self, x, training=False, mask=None) :
@@ -642,6 +653,7 @@ class DecoderBlock(CustomLayer) :
                 "dropout_mha"          : self.dropout_mha, 
                 "dropout_ff"           : self.dropout_ff, 
                 "skip_connect"         : self.skip_connect, 
+                "mixture_skip_connect" : self.mixture_skip_connect,
                 "pre_layer_norm"       : self.pre_layer_norm, 
                 "post_layer_norm"      : self.post_layer_norm, 
                 "use_causal_mask"      : self.use_causal_mask, 
@@ -669,7 +681,7 @@ class DecoderBlock(CustomLayer) :
 class EncoderBlock(CustomLayer) :
 
 
-    def __init__(self, ndim_out:int, num_heads:int, ndim_hidden_mha:int, ndim_hidden_ff:int, num_hidden_layers_ff:int=1, dropout_mha:float=0, dropout_ff:float=0, skip_connect:bool=True, pre_layer_norm:bool=True, post_layer_norm:bool=False, use_causal_mask:bool=False, activation:str="leakyrelu", leakyrelu_gradient:float=0.1, _att_block:AttentionBlock=None, **kwargs) :
+    def __init__(self, ndim_out:int, num_heads:int, ndim_hidden_mha:int, ndim_hidden_ff:int, num_hidden_layers_ff:int=1, dropout_mha:float=0, dropout_ff:float=0, skip_connect:bool=True, mixture_skip_connect:bool=False, pre_layer_norm:bool=True, post_layer_norm:bool=False, use_causal_mask:bool=False, activation:str="leakyrelu", leakyrelu_gradient:float=0.1, _att_block:AttentionBlock=None, **kwargs) :
         """
         A keras layer for applying a multi-head self-attention and feed-forward block to a sequence.
 
@@ -698,6 +710,9 @@ class EncoderBlock(CustomLayer) :
 
             >  skip_connect, bool, default=True
                Whether to use skip-connections in both the multi-head attention and feed-forward blocks
+
+            >  mixture_skip_connect, bool, default=False
+               Whether to implement skip-connections using a LearnableMixture
 
             >  pre_layer_norm, bool, default=True
                Whether to use input layer normalisation in both the multi-head attention and feed-forward blocks
@@ -729,6 +744,7 @@ class EncoderBlock(CustomLayer) :
         self.dropout_mha          = dropout_mha
         self.dropout_ff           = dropout_ff
         self.skip_connect         = skip_connect
+        self.mixture_skip_connect = mixture_skip_connect
         self.pre_layer_norm       = pre_layer_norm
         self.post_layer_norm      = post_layer_norm
         self.use_causal_mask      = use_causal_mask
@@ -740,8 +756,8 @@ class EncoderBlock(CustomLayer) :
         if _att_block : 
             self._att_block = _att_block
         else : 
-            self._att_block = AttentionBlock  (name=f"{base_name}_attention_block", ndim_out=ndim_out, ndim_hidden=ndim_hidden_mha, dropout=dropout_mha, skip_connect=skip_connect, pre_layer_norm=pre_layer_norm, post_layer_norm=post_layer_norm, dtype=self.dtype, num_heads=num_heads, use_causal_mask=use_causal_mask, self_attention=True)
-        self._ff_block      = FeedForwardBlock(name=f"{base_name}_feedfwd_block"  , ndim_out=ndim_out, ndim_hidden=ndim_hidden_ff , dropout=dropout_ff , skip_connect=skip_connect, pre_layer_norm=pre_layer_norm, post_layer_norm=post_layer_norm, dtype=self.dtype, batch_norm=False, activation=activation, leakyrelu_gradient=leakyrelu_gradient, num_hidden_layers=num_hidden_layers_ff)
+            self._att_block = AttentionBlock  (name=f"{base_name}_attention_block", ndim_out=ndim_out, ndim_hidden=ndim_hidden_mha, dropout=dropout_mha, skip_connect=skip_connect, mixture_skip_connect=mixture_skip_connect, pre_layer_norm=pre_layer_norm, post_layer_norm=post_layer_norm, dtype=self.dtype, num_heads=num_heads, use_causal_mask=use_causal_mask, self_attention=True)
+        self._ff_block      = FeedForwardBlock(name=f"{base_name}_feedfwd_block"  , ndim_out=ndim_out, ndim_hidden=ndim_hidden_ff , dropout=dropout_ff , skip_connect=skip_connect, mixture_skip_connect=mixture_skip_connect, pre_layer_norm=pre_layer_norm, post_layer_norm=post_layer_norm, dtype=self.dtype, batch_norm=False, activation=activation, leakyrelu_gradient=leakyrelu_gradient, num_hidden_layers=num_hidden_layers_ff)
                     
 
         
@@ -793,6 +809,7 @@ class EncoderBlock(CustomLayer) :
                 "dropout_mha"          : self.dropout_mha, 
                 "dropout_ff"           : self.dropout_ff, 
                 "skip_connect"         : self.skip_connect, 
+                "mixture_skip_connect" : self.mixture_skip_connect,
                 "pre_layer_norm"       : self.pre_layer_norm, 
                 "post_layer_norm"      : self.post_layer_norm, 
                 "use_causal_mask"      : self.use_causal_mask, 
@@ -895,7 +912,7 @@ class Enumerate(CustomLayer) :
 class FeedForwardBlock(CustomLayer) :
 
     def __init__(self, ndim_out:int, ndim_hidden:int, num_hidden_layers:int=1, dropout:float=0, activation='leakyrelu', activation_out='linear', 
-                 leakyrelu_gradient:float=0.1, skip_connect:bool=False, pre_layer_norm:bool=False, post_layer_norm:bool=False, batch_norm:bool=True, **kwargs) :
+                 leakyrelu_gradient:float=0.1, skip_connect:bool=False, mixture_skip_connect:bool=False, pre_layer_norm:bool=False, post_layer_norm:bool=False, batch_norm:bool=True, **kwargs) :
         '''
         class FeedForwardBlock
 
@@ -931,6 +948,9 @@ class FeedForwardBlock(CustomLayer) :
                Whether to apply skip connection between the input and output; only possible when ndim_out is equal to the input size, or
                when they can be broadcast to the same size (warning: check that output size is what you expect!)
 
+            >  mixture_skip_connect, bool, default=False
+               Whether to implement skip connections using a LearnableMixture
+
             >  pre_layer_norm, bool, default=False
                Whether to apply layer normalisation on the inputs
 
@@ -945,17 +965,18 @@ class FeedForwardBlock(CustomLayer) :
         super().__init__(**kwargs)
 
         ##  Store all arguments provided to __init__, as these will be needed to implement model saving through the get_config() method
-        self.ndim_out           = ndim_out
-        self.ndim_hidden        = ndim_hidden
-        self.num_hidden_layers  = num_hidden_layers
-        self.dropout            = dropout
-        self.activation         = activation
-        self.activation_out     = activation_out
-        self.leakyrelu_gradient = leakyrelu_gradient
-        self.skip_connect       = skip_connect
-        self.pre_layer_norm     = pre_layer_norm
-        self.post_layer_norm    = post_layer_norm
-        self.batch_norm         = batch_norm
+        self.ndim_out             = ndim_out
+        self.ndim_hidden          = ndim_hidden
+        self.num_hidden_layers    = num_hidden_layers
+        self.dropout              = dropout
+        self.activation           = activation
+        self.activation_out       = activation_out
+        self.leakyrelu_gradient   = leakyrelu_gradient
+        self.skip_connect         = skip_connect
+        self.mixture_skip_connect = mixture_skip_connect
+        self.pre_layer_norm       = pre_layer_norm
+        self.post_layer_norm      = post_layer_norm
+        self.batch_norm           = batch_norm
 
         ##  Create keras sublayers
         self.initialise_layers()
@@ -973,7 +994,10 @@ class FeedForwardBlock(CustomLayer) :
         if self.skip_connect : 
             x_dims, y_dims = x.shape[-1], y.shape[-1]
             if x_dims != y_dims : raise RuntimeError(f"Cannot apply skip-connection combining tensors of different dimensions {x_dims} and {y_dims}")
-            y = self._add([x, y], training=training)
+            if self.mixture_skip_connect :
+                y = self._mixture([x, y], training=training)
+            else :
+                y = self._add([x, y], training=training)
         return y
 
 
@@ -992,19 +1016,28 @@ class FeedForwardBlock(CustomLayer) :
         config = super().get_config()
         config.update(
             {
-                "ndim_out"           : self.ndim_out, 
-                "ndim_hidden"        : self.ndim_hidden, 
-                "num_hidden_layers"  : self.num_hidden_layers,
-                "dropout"            : self.dropout, 
-                "activation"         : self.activation, 
-                "activation_out"     : self.activation_out, 
-                "leakyrelu_gradient" : self.leakyrelu_gradient, 
-                "skip_connect"       : self.skip_connect,
-                "pre_layer_norm"     : self.pre_layer_norm,
-                "post_layer_norm"    : self.post_layer_norm,
-                "batch_norm"         : self.batch_norm,
+                "ndim_out"             : self.ndim_out, 
+                "ndim_hidden"          : self.ndim_hidden, 
+                "num_hidden_layers"    : self.num_hidden_layers,
+                "dropout"              : self.dropout, 
+                "activation"           : self.activation, 
+                "activation_out"       : self.activation_out, 
+                "leakyrelu_gradient"   : self.leakyrelu_gradient, 
+                "skip_connect"         : self.skip_connect,
+                "mixture_skip_connect" : self.mixture_skip_connect,
+                "pre_layer_norm"       : self.pre_layer_norm,
+                "post_layer_norm"      : self.post_layer_norm,
+                "batch_norm"           : self.batch_norm,
             })
         return config
+
+
+    @classmethod
+    def get_custom_layer_types(cls) :
+        """
+        Return a set of custom layers used by this class.
+        """
+        return (LearnableMixture,)
 
 
     def initialise_layers(self) :
@@ -1029,7 +1062,13 @@ class FeedForwardBlock(CustomLayer) :
         else :
             self._dense_out     = Dense(self.ndim_out, dtype=dtype, name=f"{base_name}_dense_out", activation=self.activation_out)
             self._leakyrelu_out = None
-        self._add = Add(dtype=dtype, name=f"{base_name}_add") if self.skip_connect else None
+        if self.skip_connect :
+            if self.mixture_skip_connect :
+                self._mixture = LearnableMixture(dtype=dtype, name=f"{base_name}_mixture")
+                self._add     = None
+            else :
+                self._mixture = None
+                self._add     = Add(dtype=dtype, name=f"{base_name}_add")
         if self.batch_norm : 
             dense_block_layers.append(BatchNormalization(dtype=dtype, name=f"{base_name}_batch_norm"))
         if self.post_layer_norm  :
