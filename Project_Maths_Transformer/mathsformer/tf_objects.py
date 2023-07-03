@@ -2500,3 +2500,103 @@ class Scaling(CustomLayer) :
         return config
 
 
+
+##=================================##
+##   StopByMetric keras callback   ##
+##=================================##
+##
+class StopByMetric(Callback) :
+    
+    def __init__(self, metrics:str, stop_values:float, modes:str="min", comb_type:str="and", **kwargs:dict) :
+        """
+        Class StopByMetric
+        
+        Instance of Keras Callback that stops training when a (set of) metric values are satisified
+        
+        Inputs:
+        
+            >  metrics, str or list[str]
+               Name of metric(s) to trigger training stop
+        
+            >  stop_values, float or list[float]
+               Values of metric(s) to trigger training stop, following same order as metrics
+               
+            >  modes, str or list[str], default='min'
+               Whether each metric should be minimised or maximised
+               Options are ['min', 'max']
+               
+            >  comb_type, str, default='and'
+               Whether to combine metric training stop triggers using and/or operation
+               Options are ['and', 'or']
+               
+            >  **kwargs, additional named arguments
+               Named arguments passed on to tf.keras.callbacks(Callback).__init__()
+        """
+        ##  Base class initialiser
+        super().__init__(**kwargs)
+        
+        ##  Cast inputs to lists
+        if not isinstance(metrics    , list) : metrics     = [metrics     ]
+        if not isinstance(stop_values, list) : stop_values = [stop_values ]
+        if not isinstance(modes      , list) : modes       = [modes       ]
+            
+        ##  Check length of inputs is consistent
+        l_metrics, l_stop_values, l_modes = len(metrics), len(stop_values), len(modes)
+        if l_metrics != l_stop_values : 
+            raise RuntimeError(f"Length of metrics ({l_metrics}) != length of stop_values ({l_stop_values})")
+        if l_metrics != l_modes : 
+            raise RuntimeError(f"Length of metrics ({l_metrics}) != length of modes ({l_modes})")
+        
+        ##  Check that modes are allowed
+        for mode in modes :
+            if mode not in ["min", "max"] :
+                raise NotImplementedError(f"mode '{comb_type}' not recognised, options are ['min', 'max']")
+            
+        ##  Check that comb_type is allowed
+        comb_type = comb_type.lower()
+        if comb_type not in ["and", "or"] :
+            raise NotImplementedError(f"comb_type '{comb_type}' not recognised, options are ['and', 'or']")
+        
+        ##  Store settings
+        self.metrics     = metrics
+        self.stop_values = stop_values
+        self.modes       = modes
+        self.comb_type   = comb_type
+        
+        
+    def on_epoch_end(self, epoch_idx:int, logs:dict) :
+        """
+        Set self.model.stop_training to True if the metric value trigger condition is satisfied.
+        Intended to be called automatically during model training
+        
+        Inputs:
+        
+            >  epoch_idx, int
+               Index of the previous epoch, not used by function but required for Keras compatibility
+        
+            >  logs, dict
+               Dictionary of metric-name:value pairs evaluated over the previous epoch
+        """
+        
+        ##  Get stop decision for each metric
+        stop_decisions = []
+        for metric, stop_value, mode in zip(self.metrics, self.stop_values, self.modes) :
+            value = logs.get(metric, None)
+            if value is None :
+                raise KeyError(f"Metric '{metric}' does not exist in logs: {logs}")
+            match mode :
+                case "min" : stop_decision = value < stop_value
+                case "max" : stop_decision = value > stop_value
+                case _     : raise NotImplementedError(f"Mode '{mode}' not implemented")
+            stop_decisions.append(stop_decision)
+                    
+        ##  Combine stop decisions
+        match self.comb_type :
+            case "and" : stop_decision = np.all(stop_decisions)
+            case "or"  : stop_decision = np.any(stop_decisions)
+            case _     : raise NotImplementedError(f"comb_type '{self.comb_type}' not implemented")
+        
+        ##  Stop training
+        if stop_decision :
+            self.model.stop_training = True
+            

@@ -49,7 +49,7 @@ def create_text_to_text_model(vocab_length:int,
                               optimizer             = Adam,
                               optimizer_args:dict   = None,
                               idempotent_size:int   = -1,
-                              pos_enc_num_freqs:int = 32, pos_enc_min_period:float = 4, pos_enc_max_period:float = 500 , pos_enc_learnable:bool = False,
+                              pos_enc_num_freqs:int = 32, pos_enc_min_period:float = 4, pos_enc_max_period:float = 500 , pos_enc_learnable:bool = False, pos_enc_decoder:bool = True,
                               ndim_embedding:int          = 64, comb_type:str                  = "average",
                               num_preencoder_loops:int    = 1 , num_preencoder_blocks:int      = 5  , ndim_preencoder:int           = 64 , skip_connect_preencoder:bool = True, mixture_skip_connect_preencoder:bool = False,
                               num_encoder_loops:int       = 1 , num_encoder_blocks:int         = 5  , ndim_encoder:int              = 64 , skip_connect_encoder:bool    = True, mixture_skip_connect_encoder:bool    = False,
@@ -87,6 +87,7 @@ def create_text_to_text_model(vocab_length:int,
         >  pos_enc_min_period, float, default=5    : Lower limit of the geometric series of wave-periods used for positional encoding
         >  pos_enc_max_period, float, default=10000: Upper limit of the geometric series of wave-periods used for positional encoding
         >  pos_enc_learnable , bool , default=False: Whether the positional encoding frequencies should be learnable parameters
+        >  pos_enc_decoder   , bool , default=True : Whether to use positional encoding for the decoder
 
         >  ndim_embedding, int, default=64       : Size of the token embeddings
         >  comb_type     , str, default="average": Method for combining the token embeddings and position encodings
@@ -181,16 +182,20 @@ def create_text_to_text_model(vocab_length:int,
     match comb_type.lower() :
         case "add" | "sum" :
             x_enc = Add(name=f"{name}_encoder_emb_and_pos", dtype=dtype)([x_embed_enc, x_pos_enc])
-            x_dec = Add(name=f"{name}_decoder_emb_and_pos", dtype=dtype)([x_embed_dec, x_pos_dec])
+            if pos_enc_decoder :
+                x_dec = Add(name=f"{name}_decoder_emb_and_pos", dtype=dtype)([x_embed_dec, x_pos_dec])
         case "average" | "mean" :
             x_enc = Average(name=f"{name}_encoder_emb_and_pos", dtype=dtype)([x_embed_enc, x_pos_enc])
-            x_dec = Average(name=f"{name}_decoder_emb_and_pos", dtype=dtype)([x_embed_dec, x_pos_dec])
+            if pos_enc_decoder :
+                x_dec = Average(name=f"{name}_decoder_emb_and_pos", dtype=dtype)([x_embed_dec, x_pos_dec])
         case "concat" | "concatenate" :
             x_enc = Concatenate(name=f"{name}_encoder_emb_and_pos", dtype=dtype)([x_embed_enc, x_pos_enc])
-            x_dec = Concatenate(name=f"{name}_decoder_emb_and_pos", dtype=dtype)([x_embed_dec, x_pos_dec])
+            if pos_enc_decoder :
+                x_dec = Concatenate(name=f"{name}_decoder_emb_and_pos", dtype=dtype)([x_embed_dec, x_pos_dec])
         case "mixture" :
             x_enc = LearnableMixture(name=f"{name}_encoder_emb_and_pos", dtype=dtype)([x_embed_enc, x_pos_enc])
-            x_dec = LearnableMixture(name=f"{name}_decoder_emb_and_pos", dtype=dtype)([x_embed_dec, x_pos_dec])
+            if pos_enc_decoder :
+                x_dec = LearnableMixture(name=f"{name}_decoder_emb_and_pos", dtype=dtype)([x_embed_dec, x_pos_dec])
         case _ :
             raise RuntimeError(f"comb_type '{comb_type}' not recognised, recognised keywords are {allowed_comb_types}")
     
@@ -212,6 +217,10 @@ def create_text_to_text_model(vocab_length:int,
                                  mixture_skip_connect = mixture_skip_connect_preencoder, 
                                  name                 = f"{name}_preencoder_block_{layer_idx+1}"))
     
+    for loop_idx in range(num_preencoder_loops) :
+        for preencoder_block in preencoder_blocks :
+            x_enc = preencoder_block(x_enc)
+
     ##============================================================##
     ##===  Encoder blocks - Output shape [B, S, ndim_encoder]  ===##
     ##============================================================##
@@ -240,6 +249,17 @@ def create_text_to_text_model(vocab_length:int,
         for encoder_block in encoder_blocks :
             x_enc = encoder_block(x_enc)
         x_enc_list.append(x_enc)
+    
+    ##===================================================================##
+    ##===  Pre-decoder blocks - Output shape [B, S, ndim_predecoder]  ===##
+    ##===================================================================##
+    '''    predecoder_blocks = []
+    for layer_idx in range(num_predecoder_blocks) :
+        predecoder_blocks.append(DecoderBlock())
+    
+    for loop_idx in range(num_predecoder_loops) :
+        for predecoder_block in predecoder_blocks :
+            x_dec = predecoder_block(x_enc)'''
     
     ##============================================================##
     ##===  Decoder blocks - Output shape [B, S, ndim_decoder]  ===##

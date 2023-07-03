@@ -26,6 +26,7 @@ from .tf_objects   import (create_custom_objects_dict,
                            MaskedCategoricalAccuracy, MaskedSparseCategoricalCrossentropy, 
                            DecoderBlock, EncoderBlock, Enumerate, FeedForwardBlock, LearnableMixture, PositionalEncoding,
                            AdaptiveLearningRate, LayerActivationRecord, LayerWeightsRecord, LoggerCallback, MetricRecord,
+                           StopByMetric,
                           )
 from .transformers import create_text_to_text_model, Transformer_Text_to_Text
 
@@ -183,6 +184,47 @@ DEFAULT_CONFIG = {
 ##=================##
 
 
+def create_derived_model(model, cfg_model:dict, token_transform, copy_learning_rate:bool=False, **kwargs:dict) :
+    """
+    Create a new model according to the config and token transform provided, then copy the weights
+    from an existing model. The new model must have compatibl weight tensors for this to work, e.g.
+    we can change the number of encoder loops but not the block or layer sizes.
+    
+    Inputs:
+    
+        >  model, tf.keras.Model
+           Existing model to copy weights from
+           
+        >  cfg_model, dict
+           model config dictionary
+           
+        >  token_transform, data.TokenTransform
+           token transform from which to gather vocab size
+           
+        >  copy_learning_rate, bool, default=False
+           Whether to copy the learning rate from the previous model, overriding all other settings
+           
+        >  **kwargs
+           Keyword arguments used to override the model config, e.g. to modify the number of encoder loops
+           This means that we can provide the same cfg_model as used to create the original model, and only
+           vary one or two settings
+    """
+
+    ##  Create new model with same model config
+    derived_model = create_text_to_text_model_from_config(cfg_model, token_transform, **kwargs)
+    
+    ##  Copy weights
+    derived_model.set_weights(model.get_weights())
+    
+    ##  Copy learning rate
+    if copy_learning_rate :
+        derived_model.optimizer.learning_rate.assign(model.optimizer.learning_rate.value())
+        
+    ##  Return new model
+    return derived_model
+
+
+
 def create_tensor_dataset(token_transform, max_int:int, negative_char:str='-', include_neg:bool=True, shuffle:bool=True) :
     '''
     Create dataset of tensors X, Y_in, Y_out
@@ -266,7 +308,7 @@ def create_tensor_dataset(token_transform, max_int:int, negative_char:str='-', i
     return data_X, data_Y_in, data_Y_out
 
 
-def create_text_to_text_model_from_config(cfg_model, token_transform) :
+def create_text_to_text_model_from_config(cfg_model, token_transform, **kwargs) :
     """
     Create a text-to-text transformer model
     
@@ -277,52 +319,109 @@ def create_text_to_text_model_from_config(cfg_model, token_transform) :
            
         >  token_transform, TokenTransform
            Tokeniser
+
+        >  **kwargs
+           Keyword argument that override the model config
     """
     return create_text_to_text_model(
                           vocab_length                    = token_transform.vocab_length, 
-                          name                            = cfg_model["name"],
+                          name                            = kwargs.get("name"                           , cfg_model["name"]),
                           do_compile                      = True,
-                          use_old_loss                    = cfg_model["use_old_loss"],
+                          use_old_loss                    = kwargs.get("use_old_loss"                   , cfg_model["use_old_loss"]),
                           dtype_in                        = token_transform.dtype,
-                          dtype                           = cfg_model["dtype"],
-                          dropout                         = cfg_model["dropout"],
-                          jit_compile                     = cfg_model["jit_compile"],
-                          optimizer                       = cfg_model.get("optimizer", Adam),
-                          optimizer_args                  = cfg_model.get("optimizer_args", {}),
-                          idempotent_size                 = cfg_model["idempotent_size"],
-                          pos_enc_num_freqs               = cfg_model["positional_encoding"]["num_freqs"],
-                          pos_enc_min_period              = cfg_model["positional_encoding"]["min_period"],
-                          pos_enc_max_period              = cfg_model["positional_encoding"]["max_period"],
-                          pos_enc_learnable               = cfg_model["positional_encoding"]["learnable"],
-                          ndim_embedding                  = cfg_model["ndim_embedding"],
-                          num_preencoder_blocks           = cfg_model["pre_encoder"]["num_blocks"],
-                          num_preencoder_loops            = cfg_model["pre_encoder"]["num_loops"],
-                          ndim_preencoder                 = cfg_model["pre_encoder"]["ndim"],
-                          num_heads_preencoder            = cfg_model["pre_encoder"]["num_heads"],
-                          ndim_att_hidden_preencoder      = cfg_model["pre_encoder"]["ndim_att_hidden"],
-                          ndim_ff_hidden_preencoder       = cfg_model["pre_encoder"]["ndim_ff_hidden"],
-                          skip_connect_preencoder         = cfg_model["pre_encoder"]["skip_connect"],
-                          mixture_skip_connect_preencoder = cfg_model["pre_encoder"]["mixture_skip_connect"],
-                          num_encoder_blocks              = cfg_model["encoder"]["num_blocks"],
-                          num_encoder_loops               = cfg_model["encoder"]["num_loops"],
-                          ndim_encoder                    = cfg_model["encoder"]["ndim"],
-                          num_heads_encoder               = cfg_model["encoder"]["num_heads"],
-                          ndim_att_hidden_encoder         = cfg_model["encoder"]["ndim_att_hidden"],
-                          ndim_ff_hidden_encoder          = cfg_model["encoder"]["ndim_ff_hidden"],
-                          skip_connect_encoder            = cfg_model["encoder"]["skip_connect"],
-                          mixture_skip_connect_encoder    = cfg_model["encoder"]["mixture_skip_connect"],
-                          num_decoder_blocks              = cfg_model["decoder"]["num_blocks"],
-                          num_decoder_loops               = cfg_model["decoder"]["num_loops"],
-                          ndim_decoder                    = cfg_model["decoder"]["ndim"],
-                          num_heads_decoder               = cfg_model["decoder"]["num_heads"],
-                          ndim_att_hidden_decoder         = cfg_model["decoder"]["ndim_att_hidden"],
-                          ndim_ff_hidden_decoder          = cfg_model["decoder"]["ndim_ff_hidden"],
-                          skip_connect_decoder            = cfg_model["decoder"]["skip_connect"],
-                          mixture_skip_connect_decoder    = cfg_model["decoder"]["mixture_skip_connect"],
-                          num_post_layers_decoder         = cfg_model["post_decoder"]["num_layers"],
-                          ndim_post_layers_decoder        = cfg_model["post_decoder"]["ndim"],)
+                          dtype                           = kwargs.get("dtype"                          , cfg_model["dtype"]),
+                          dropout                         = kwargs.get("dropout"                        , cfg_model["dropout"]),
+                          jit_compile                     = kwargs.get("jit_compile"                    , cfg_model["jit_compile"]),
+                          optimizer                       = kwargs.get("optimizer"                      , cfg_model.get("optimizer", Adam)),
+                          optimizer_args                  = kwargs.get("optimizer_args"                 , cfg_model.get("optimizer_args", {})),
+                          idempotent_size                 = kwargs.get("idempotent_size"                , cfg_model["idempotent_size"]),
+                          pos_enc_num_freqs               = kwargs.get("pos_enc_num_freqs"              , cfg_model["positional_encoding"]["num_freqs"]),
+                          pos_enc_min_period              = kwargs.get("pos_enc_min_period"             , cfg_model["positional_encoding"]["min_period"]),
+                          pos_enc_max_period              = kwargs.get("pos_enc_max_period"             , cfg_model["positional_encoding"]["max_period"]),
+                          pos_enc_learnable               = kwargs.get("pos_enc_learnable"              , cfg_model["positional_encoding"]["learnable"]),
+                          pos_enc_decoder                 = kwargs.get("pos_enc_decoder"                , cfg_model["positional_encoding"].get("do_decoder", True)),
+                          ndim_embedding                  = kwargs.get("ndim_embedding"                 , cfg_model["ndim_embedding"]),
+                          num_preencoder_blocks           = kwargs.get("num_preencoder_blocks"          , cfg_model["pre_encoder"]["num_blocks"]),
+                          num_preencoder_loops            = kwargs.get("num_preencoder_loops"           , cfg_model["pre_encoder"]["num_loops"]),
+                          ndim_preencoder                 = kwargs.get("ndim_preencoder"                , cfg_model["pre_encoder"]["ndim"]),
+                          num_heads_preencoder            = kwargs.get("num_heads_preencoder"           , cfg_model["pre_encoder"]["num_heads"]),
+                          ndim_att_hidden_preencoder      = kwargs.get("ndim_att_hidden_preencoder"     , cfg_model["pre_encoder"]["ndim_att_hidden"]),
+                          ndim_ff_hidden_preencoder       = kwargs.get("ndim_ff_hidden_preencoder"      , cfg_model["pre_encoder"]["ndim_ff_hidden"]),
+                          skip_connect_preencoder         = kwargs.get("skip_connect_preencoder"        , cfg_model["pre_encoder"]["skip_connect"]),
+                          mixture_skip_connect_preencoder = kwargs.get("mixture_skip_connect_preencoder", cfg_model["pre_encoder"]["mixture_skip_connect"]),
+                          num_encoder_blocks              = kwargs.get("num_encoder_blocks"             , cfg_model["encoder"]["num_blocks"]),
+                          num_encoder_loops               = kwargs.get("num_encoder_loops"              , cfg_model["encoder"]["num_loops"]),
+                          ndim_encoder                    = kwargs.get("ndim_encoder"                   , cfg_model["encoder"]["ndim"]),
+                          num_heads_encoder               = kwargs.get("num_heads_encoder"              , cfg_model["encoder"]["num_heads"]),
+                          ndim_att_hidden_encoder         = kwargs.get("ndim_att_hidden_encoder"        , cfg_model["encoder"]["ndim_att_hidden"]),
+                          ndim_ff_hidden_encoder          = kwargs.get("ndim_ff_hidden_encoder"         , cfg_model["encoder"]["ndim_ff_hidden"]),
+                          skip_connect_encoder            = kwargs.get("skip_connect_encoder"           , cfg_model["encoder"]["skip_connect"]),
+                          mixture_skip_connect_encoder    = kwargs.get("mixture_skip_connect_encoder"   , cfg_model["encoder"]["mixture_skip_connect"]),
+                          num_decoder_blocks              = kwargs.get("num_decoder_blocks"             , cfg_model["decoder"]["num_blocks"]),
+                          num_decoder_loops               = kwargs.get("num_decoder_loops"              , cfg_model["decoder"]["num_loops"]),
+                          ndim_decoder                    = kwargs.get("ndim_decoder"                   , cfg_model["decoder"]["ndim"]),
+                          num_heads_decoder               = kwargs.get("num_heads_decoder"              , cfg_model["decoder"]["num_heads"]),
+                          ndim_att_hidden_decoder         = kwargs.get("ndim_att_hidden_decoder"        , cfg_model["decoder"]["ndim_att_hidden"]),
+                          ndim_ff_hidden_decoder          = kwargs.get("ndim_ff_hidden_decoder"         , cfg_model["decoder"]["ndim_ff_hidden"]),
+                          skip_connect_decoder            = kwargs.get("skip_connect_decoder"           , cfg_model["decoder"]["skip_connect"]),
+                          mixture_skip_connect_decoder    = kwargs.get("mixture_skip_connect_decoder"   , cfg_model["decoder"]["mixture_skip_connect"]),
+                          num_post_layers_decoder         = kwargs.get("num_post_layers_decoder"        , cfg_model["post_decoder"]["num_layers"]),
+                          ndim_post_layers_decoder        = kwargs.get("ndim_post_layers_decoder"       , cfg_model["post_decoder"]["ndim"]),
+                          )
 
 
+
+def log_metrics(model, generators, labels, verbose:int=0) :
+    """
+    Evaluate and log the metrics for the model over the labelled data generators provided
+
+    Inputs:
+
+        >  model, tf.keras.Model
+           Model to be evaluated
+
+        >  generators, list[RandomDataGenerator_Addition]
+           Data generators to evaluate model over
+
+        >  labels, list[str]
+           Labels for the data generators
+
+        >  verbose, int, default=0
+           Verbose setting for call to model.evaluate(..., verbose=verbose)
+    """
+    ##  Save model history
+    history = model.history
+
+    ##  Cast inputs to list
+    if type(generators) is not list : generators = [generators]
+    if type(labels    ) is not list : labels     = [labels]
+    
+    ##  Check input types
+    for generator in generators :
+        if isinstance(generator, RandomDataGenerator_Addition) : continue
+        raise TypeError(f"Generator must be an instance of type {RandomDataGenerator_Addition}, found {type(generator)}")
+    
+    for label in labels :
+        if isinstance(label, str) : continue
+        raise TypeError(f"Label must be an instance of type {str}, found {type(label)}")
+        
+    ##  Check same num of generators and labels provided
+    if len(generators) != len(labels) :
+        raise RuntimeError(f"Number of generators ({len(generators)}) must match number of labels ({len(labels)})")
+        
+    ##  Retrive metrics names
+    metric_names = model.metrics_names
+        
+    ##  Loop generators and print metrics
+    for label, generator in zip(labels, generators) :
+        metrics = model.evaluate(generator, verbose=verbose)
+        logger.info(f"Model with {label} metrics:")
+        for metric_name, metric in zip(metric_names, metrics) :
+            logger.info(f"    {metric_name}:  {metric}")
+
+    ##  Replace model history
+    model.history = history
+        
 
 
 def get_callbacks(cfg_training:Config, working_dir:str="", transformer:Transformer_Text_to_Text=None, 
@@ -467,6 +566,16 @@ def get_callbacks(cfg_training:Config, working_dir:str="", transformer:Transform
         callbacks.append(acc_record)
         logger.info(f"Registered training callback: MetricRecord (masked_accuracy) with batch_frequency={batch_frequency}, max_datapoints={max_datapoints}, num_bootstrap={num_bootstrap}")
 
+    ##  Add StopByMetric callback
+    stop_by_metric_config = cfg_training.get("stop_by_metric", {})
+    if stop_by_metric_config.get("do", False) :
+        metric     = stop_by_metric_config["metric"]
+        stop_value = stop_by_metric_config["stop_value"]
+        mode       = stop_by_metric_config["mode"]
+        callback   = StopByMetric(metric, stop_value, mode)
+        callbacks.append(callback)
+        logger.info(f"Registered training callback: StopByMetric with metric='{metric}, stop_value='{stop_value}, mode='{mode}")
+
     ##  Return list of callbacks
     return callbacks
 
@@ -495,13 +604,13 @@ def get_data_generators(cfg_data:Config, token_transform:TokenTransform) -> tupl
                                     reproducible    = cfg_data["train_data"]["gen_reproducible"],
                                     negative_char   = cfg_data["negative_char"],)
     
-    ##  Create training data generator that has forced reproducible=True
+    ##  Create training data generator that has forced reproducible=True, but for only a validation number of batches
     train_gen_reproducible = RandomDataGenerator_Addition(
                                     token_transform = token_transform, 
                                     int_lengths     = cfg_data["train_data"]["int_lengths"],
                                     num_ints        = cfg_data["train_data"]["num_ints"],
                                     batch_size      = cfg_data["train_data"]["batch_size"],
-                                    num_batches     = cfg_data["train_data"]["num_batches"],
+                                    num_batches     = cfg_data["val_data"  ]["num_batches"],
                                     base_seed       = cfg_data["train_data"]["gen_base_seed"],
                                     reproducible    = True,
                                     negative_char   = cfg_data["negative_char"],)
